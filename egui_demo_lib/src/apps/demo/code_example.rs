@@ -95,6 +95,7 @@ impl CodeExample {
     fn ui(&mut self, ui: &mut egui::Ui) {
 "
             .trim(),
+            "rs"
         );
 
         ui.horizontal(|ui| {
@@ -112,11 +113,11 @@ impl CodeExample {
                 });
         });
 
-        code_view_ui(ui, "    }\n}");
+        code_view_ui(ui, "    }\n}", "rs");
 
         ui.separator();
 
-        code_view_ui(ui, &format!("{:#?}", self));
+        code_view_ui(ui, &format!("{:#?}", self), "rs");
 
         ui.separator();
 
@@ -130,7 +131,7 @@ impl CodeExample {
 
 fn show_code(ui: &mut egui::Ui, code: &str) {
     let code = remove_leading_indentation(code.trim_start_matches('\n'));
-    crate::syntax_highlighting::code_view_ui(ui, &code);
+    crate::syntax_highlighting::code_view_ui(ui, &code, "rs");
 }
 
 fn remove_leading_indentation(code: &str) -> String {

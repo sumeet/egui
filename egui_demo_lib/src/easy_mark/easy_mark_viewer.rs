@@ -1,5 +1,6 @@
 use super::easy_mark_parser as easy_mark;
 use egui::*;
+use crate::syntax_highlighting::code_view_ui;
 
 /// Parse and display a VERY simple and small subset of Markdown.
 pub fn easy_mark(ui: &mut Ui, easy_mark: &str) {
@@ -74,11 +75,13 @@ pub fn item_ui(ui: &mut Ui, item: easy_mark::Item<'_>) {
             numbered_point(ui, width, number);
             ui.allocate_exact_size(vec2(one_indent, row_height), Sense::hover());
         }
-        easy_mark::Item::CodeBlock(_language, code) => {
+        easy_mark::Item::CodeBlock(language, code) => {
             let where_to_put_background = ui.painter().add(Shape::Noop);
-            let mut rect = ui.monospace(code).rect;
+            // the old un-highlighted version
+            // let mut rect = ui.monospace(code).rect;
+            let mut rect = code_view_ui(ui, code, language).rect;
             rect = rect.expand(1.0); // looks better
-            rect.max.x = ui.max_rect().max.x;
+            // this line is bad rect.max.x = ui.max_rect().max.x;
             let code_bg_color = ui.visuals().code_bg_color;
             ui.painter().set(
                 where_to_put_background,

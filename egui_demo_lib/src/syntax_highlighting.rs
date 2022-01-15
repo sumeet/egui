@@ -1,8 +1,8 @@
+use egui::Response;
 use egui::text::LayoutJob;
 
 /// View some code with syntax highlighing and selection.
-pub fn code_view_ui(ui: &mut egui::Ui, mut code: &str) {
-    let language = "rs";
+pub fn code_view_ui(ui: &mut egui::Ui, mut code: &str, language: &str) -> Response {
     let theme = CodeTheme::from_memory(ui.ctx());
 
     let mut layouter = |ui: &egui::Ui, string: &str, _wrap_width: f32| {
@@ -18,7 +18,7 @@ pub fn code_view_ui(ui: &mut egui::Ui, mut code: &str) {
             .desired_rows(1)
             .lock_focus(true)
             .layouter(&mut layouter),
-    );
+    )
 }
 
 /// Memoized Code highlighting
