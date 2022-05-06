@@ -30,7 +30,7 @@ impl Frame {
         }
     }
 
-    pub(crate) fn side_top_panel(style: &Style) -> Self {
+    pub fn side_top_panel(style: &Style) -> Self {
         Self {
             margin: Vec2::new(8.0, 2.0),
             corner_radius: 0.0,
@@ -40,7 +40,7 @@ impl Frame {
         }
     }
 
-    pub(crate) fn central_panel(style: &Style) -> Self {
+    pub fn central_panel(style: &Style) -> Self {
         Self {
             margin: Vec2::new(8.0, 8.0),
             corner_radius: 0.0,
