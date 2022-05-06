@@ -1,5 +1,6 @@
 // WARNING: the code in here is horrible. It is a behemoth that needs breaking up into simpler parts.
 
+use crate::collapsing_header::CollapsingState;
 use crate::{widget_text::WidgetTextGalley, *};
 use epaint::*;
 
@@ -269,10 +270,10 @@ impl<'open> Window<'open> {
         let area_id = area.id;
         let area_layer_id = area.layer();
         let resize_id = area_id.with("resize");
-        let collapsing_id = area_id.with("collapsing");
+        let mut collapsing =
+            CollapsingState::load_with_default_open(ctx, area_id.with("collapsing"), true);
 
-        let is_collapsed = with_title_bar
-            && !collapsing_header::State::is_open(ctx, collapsing_id).unwrap_or_default();
+        let is_collapsed = with_title_bar && !collapsing.is_open();
         let possible = PossibleInteractions::new(&area, &resize, is_collapsed);
 
         let area = area.movable(false); // We move it manually, or the area will move the window when we want to resize it
@@ -296,11 +297,14 @@ impl<'open> Window<'open> {
             .and_then(|window_interaction| {
                 // Calculate roughly how much larger the window size is compared to the inner rect
                 let title_bar_height = if with_title_bar {
-                    title.font_height(ctx) + title_content_spacing
+                    let style = ctx.style();
+                    title.font_height(&ctx.fonts(), &style) + title_content_spacing
                 } else {
                     0.0
                 };
-                let margins = 2.0 * frame.margin + vec2(0.0, title_bar_height);
+                let margins = frame.outer_margin.sum()
+                    + frame.inner_margin.sum()
+                    + vec2(0.0, title_bar_height);
 
                 interact(
                     window_interaction,
@@ -323,19 +327,12 @@ impl<'open> Window<'open> {
             let frame_stroke = frame.stroke;
             let mut frame = frame.begin(&mut area_content_ui);
 
-            let default_expanded = true;
-            let mut collapsing = collapsing_header::State::from_memory_with_default_open(
-                ctx,
-                collapsing_id,
-                default_expanded,
-            );
             let show_close_button = open.is_some();
             let title_bar = if with_title_bar {
                 let title_bar = show_title_bar(
                     &mut frame.content_ui,
                     title,
                     show_close_button,
-                    collapsing_id,
                     &mut collapsing,
                     collapsible,
                 );
@@ -346,14 +343,14 @@ impl<'open> Window<'open> {
             };
 
             let (content_inner, content_response) = collapsing
-                .add_contents(&mut frame.content_ui, collapsing_id, |ui| {
+                .show_body_unindented(&mut frame.content_ui, |ui| {
                     resize.show(ui, |ui| {
                         if title_bar.is_some() {
                             ui.add_space(title_content_spacing);
                         }
 
                         if scroll.has_any_bar() {
-                            scroll.show(ui, add_contents)
+                            scroll.show(ui, add_contents).inner
                         } else {
                             add_contents(ui)
                         }
@@ -377,7 +374,7 @@ impl<'open> Window<'open> {
                 );
             }
 
-            collapsing.store(ctx, collapsing_id);
+            collapsing.store(ctx);
 
             if let Some(interaction) = interaction {
                 paint_frame_interaction(
@@ -698,42 +695,62 @@ fn paint_frame_interaction(
 ) {
     use epaint::tessellator::path::add_circle_quadrant;
 
-    let cr = ui.visuals().window_corner_radius;
+    let rounding = ui.visuals().window_rounding;
     let Rect { min, max } = rect;
 
     let mut points = Vec::new();
 
     if interaction.right && !interaction.bottom && !interaction.top {
-        points.push(pos2(max.x, min.y + cr));
-        points.push(pos2(max.x, max.y - cr));
+        points.push(pos2(max.x, min.y + rounding.ne));
+        points.push(pos2(max.x, max.y - rounding.se));
     }
     if interaction.right && interaction.bottom {
-        points.push(pos2(max.x, min.y + cr));
-        points.push(pos2(max.x, max.y - cr));
-        add_circle_quadrant(&mut points, pos2(max.x - cr, max.y - cr), cr, 0.0);
+        points.push(pos2(max.x, min.y + rounding.ne));
+        points.push(pos2(max.x, max.y - rounding.se));
+        add_circle_quadrant(
+            &mut points,
+            pos2(max.x - rounding.se, max.y - rounding.se),
+            rounding.se,
+            0.0,
+        );
     }
     if interaction.bottom {
-        points.push(pos2(max.x - cr, max.y));
-        points.push(pos2(min.x + cr, max.y));
+        points.push(pos2(max.x - rounding.se, max.y));
+        points.push(pos2(min.x + rounding.sw, max.y));
     }
     if interaction.left && interaction.bottom {
-        add_circle_quadrant(&mut points, pos2(min.x + cr, max.y - cr), cr, 1.0);
+        add_circle_quadrant(
+            &mut points,
+            pos2(min.x + rounding.sw, max.y - rounding.sw),
+            rounding.sw,
+            1.0,
+        );
     }
     if interaction.left {
-        points.push(pos2(min.x, max.y - cr));
-        points.push(pos2(min.x, min.y + cr));
+        points.push(pos2(min.x, max.y - rounding.sw));
+        points.push(pos2(min.x, min.y + rounding.nw));
     }
     if interaction.left && interaction.top {
-        add_circle_quadrant(&mut points, pos2(min.x + cr, min.y + cr), cr, 2.0);
+        add_circle_quadrant(
+            &mut points,
+            pos2(min.x + rounding.nw, min.y + rounding.nw),
+            rounding.nw,
+            2.0,
+        );
     }
     if interaction.top {
-        points.push(pos2(min.x + cr, min.y));
-        points.push(pos2(max.x - cr, min.y));
+        points.push(pos2(min.x + rounding.nw, min.y));
+        points.push(pos2(max.x - rounding.ne, min.y));
     }
     if interaction.right && interaction.top {
-        add_circle_quadrant(&mut points, pos2(max.x - cr, min.y + cr), cr, 3.0);
-        points.push(pos2(max.x, min.y + cr));
-        points.push(pos2(max.x, max.y - cr));
+        add_circle_quadrant(
+            &mut points,
+            pos2(max.x - rounding.ne, min.y + rounding.ne),
+            rounding.ne,
+            3.0,
+        );
+        points.push(pos2(max.x, min.y + rounding.ne));
+        points.push(pos2(max.x, max.y - rounding.se));
     }
     ui.painter().add(Shape::line(points, visuals.bg_stroke));
 }
@@ -741,9 +758,16 @@ fn paint_frame_interaction(
 // ----------------------------------------------------------------------------
 
 struct TitleBar {
+    /// A title Id used for dragging windows
     id: Id,
+    /// Prepared text in the title
     title_galley: WidgetTextGalley,
+    /// Size of the title bar in a collapsed state (if window is collapsible),
+    /// which includes all necessary space for showing the expand button, the
+    /// title and the close button.
     min_rect: Rect,
+    /// Size of the title bar in an expanded state. This size become known only
+    /// after expanding window and painting its content
     rect: Rect,
 }
 
@@ -751,13 +775,12 @@ fn show_title_bar(
     ui: &mut Ui,
     title: WidgetText,
     show_close_button: bool,
-    collapsing_id: Id,
-    collapsing: &mut collapsing_header::State,
+    collapsing: &mut CollapsingState,
     collapsible: bool,
 ) -> TitleBar {
     let inner_response = ui.horizontal(|ui| {
         let height = title
-            .font_height(ui.ctx())
+            .font_height(&ui.fonts(), ui.style())
             .max(ui.spacing().interact_size.y);
         ui.set_min_height(height);
 
@@ -768,14 +791,7 @@ fn show_title_bar(
 
         if collapsible {
             ui.add_space(pad);
-
-            let (_id, rect) = ui.allocate_space(button_size);
-            let collapse_button_response = ui.interact(rect, collapsing_id, Sense::click());
-            if collapse_button_response.clicked() {
-                collapsing.toggle(ui);
-            }
-            let openness = collapsing.openness(ui.ctx(), collapsing_id);
-            collapsing_header::paint_icon(ui, openness, &collapse_button_response);
+            collapsing.show_default_button_with_size(ui, button_size);
         }
 
         let title_galley = title.into_galley(ui, Some(false), f32::INFINITY, TextStyle::Heading);
@@ -804,13 +820,27 @@ fn show_title_bar(
 }
 
 impl TitleBar {
+    /// Finishes painting of the title bar when the window content size already known.
+    ///
+    /// # Parameters
+    ///
+    /// - `ui`:
+    /// - `outer_rect`:
+    /// - `content_response`: if `None`, window is collapsed at this frame, otherwise contains
+    ///   a result of rendering the window content
+    /// - `open`: if `None`, no "Close" button will be rendered, otherwise renders and processes
+    ///   the "Close" button and writes a `false` if window was closed
+    /// - `collapsing`: holds the current expanding state. Can be changed by double click on the
+    ///   title if `collapsible` is `true`
+    /// - `collapsible`: if `true`, double click on the title bar will be handled for a change
+    ///   of `collapsing` state
     fn ui(
         mut self,
         ui: &mut Ui,
         outer_rect: Rect,
         content_response: &Option<Response>,
         open: Option<&mut bool>,
-        collapsing: &mut collapsing_header::State,
+        collapsing: &mut CollapsingState,
         collapsible: bool,
     ) {
         if let Some(content_response) = &content_response {
@@ -840,14 +870,10 @@ impl TitleBar {
 
         if let Some(content_response) = &content_response {
             // paint separator between title and content:
-            let left = outer_rect.left();
-            let right = outer_rect.right();
             let y = content_response.rect.top() + ui.spacing().item_spacing.y * 0.5;
             // let y = lerp(self.rect.bottom()..=content_response.rect.top(), 0.5);
-            ui.painter().line_segment(
-                [pos2(left, y), pos2(right, y)],
-                ui.visuals().widgets.noninteractive.bg_stroke,
-            );
+            let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+            ui.painter().hline(outer_rect.x_range(), y, stroke);
         }
 
         if ui
@@ -859,6 +885,11 @@ impl TitleBar {
         }
     }
 
+    /// Paints the "Close" button at the right side of the title bar
+    /// and processes clicks on it.
+    ///
+    /// The button is square and its size is determined by the
+    /// [`crate::style::Spacing::icon_width`] setting.
     fn close_button_ui(&self, ui: &mut Ui) -> Response {
         let button_size = Vec2::splat(ui.spacing().icon_width);
         let pad = (self.rect.height() - button_size.y) / 2.0; // calculated so that the icon is on the diagonal (if window padding is symmetrical)
@@ -874,6 +905,16 @@ impl TitleBar {
     }
 }
 
+/// Paints the "Close" button of the window and processes clicks on it.
+///
+/// The close button is just an `X` symbol painted by a current stroke
+/// for foreground elements (such as a label text).
+///
+/// # Parameters
+/// - `ui`:
+/// - `rect`: The rectangular area to fit the button in
+///
+/// Returns the result of a click on a button if it was pressed
 fn close_button(ui: &mut Ui, rect: Rect) -> Response {
     let close_id = ui.auto_id_with("window_close_button");
     let response = ui.interact(rect, close_id, Sense::click());
@@ -882,9 +923,9 @@ fn close_button(ui: &mut Ui, rect: Rect) -> Response {
     let visuals = ui.style().interact(&response);
     let rect = rect.shrink(2.0).expand(visuals.expansion);
     let stroke = visuals.fg_stroke;
-    ui.painter()
+    ui.painter() // paints \
         .line_segment([rect.left_top(), rect.right_bottom()], stroke);
-    ui.painter()
+    ui.painter() // paints /
         .line_segment([rect.right_top(), rect.left_bottom()], stroke);
     response
 }

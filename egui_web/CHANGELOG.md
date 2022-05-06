@@ -1,12 +1,15 @@
-# Changelog for egui_web
+# Legacy changelog for egui_web
+Between versions 0.17 and 0.18, `egui_web` was absorbed into `eframe`. Most of this changelog was then merged into [the `eframe` changelog](../eframe/CHANGELOG.md). This changelog is now only kept for historical reasons.
 
-All notable changes to the `egui_web` integration will be noted in this file.
 
 
-## Unreleased
+## 0.17.0 - 2022-02-22
 * The default painter is now glow instead of WebGL ([#1020](https://github.com/emilk/egui/pull/1020)).
 * Made the WebGL painter opt-in ([#1020](https://github.com/emilk/egui/pull/1020)).
-* Fix glow failure Chrome ((#1092)[https://github.com/emilk/egui/pull/1092]).
+* Fixed glow failure on Chromium ([#1092](https://github.com/emilk/egui/pull/1092)).
+* Shift-scroll will now result in horizontal scrolling ([#1136](https://github.com/emilk/egui/pull/1136)).
+* Updated `epi::IntegrationInfo::web_location_hash` on `hashchange` event ([#1140](https://github.com/emilk/egui/pull/1140)).
+* Parse and percent-decode the web location query string ([#1258](https://github.com/emilk/egui/pull/1258)).
 
 
 ## 0.16.0 - 2021-12-29

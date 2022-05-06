@@ -34,11 +34,11 @@ pub struct TextEditState {
 
 impl TextEditState {
     pub fn load(ctx: &Context, id: Id) -> Option<Self> {
-        ctx.memory().data.get_persisted(id)
+        ctx.data().get_persisted(id)
     }
 
     pub fn store(self, ctx: &Context, id: Id) {
-        ctx.memory().data.insert_persisted(id, self);
+        ctx.data().insert_persisted(id, self);
     }
 
     /// The the currently selected range of characters.
@@ -64,7 +64,7 @@ impl TextEditState {
         self.cursor_range
             .map(|cursor_range| {
                 // We only use the PCursor (paragraph number, and character offset within that paragraph).
-                // This is so that if we resize the `TextEdit` region, and text wrapping changes,
+                // This is so that if we resize the [`TextEdit`] region, and text wrapping changes,
                 // we keep the same byte character offset from the beginning of the text,
                 // even though the number of rows changes
                 // (each paragraph can be several rows, due to word wrapping).

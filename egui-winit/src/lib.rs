@@ -3,94 +3,14 @@
 //! The library translates winit events to egui, handled copy/paste,
 //! updates the cursor, open links clicked in egui, etc.
 
-#![forbid(unsafe_code)]
-#![warn(
-    clippy::all,
-    clippy::await_holding_lock,
-    clippy::char_lit_as_u8,
-    clippy::checked_conversions,
-    clippy::dbg_macro,
-    clippy::debug_assert_with_mut_call,
-    clippy::disallowed_method,
-    clippy::doc_markdown,
-    clippy::empty_enum,
-    clippy::enum_glob_use,
-    clippy::exit,
-    clippy::expl_impl_clone_on_copy,
-    clippy::explicit_deref_methods,
-    clippy::explicit_into_iter_loop,
-    clippy::fallible_impl_from,
-    clippy::filter_map_next,
-    clippy::flat_map_option,
-    clippy::float_cmp_const,
-    clippy::fn_params_excessive_bools,
-    clippy::from_iter_instead_of_collect,
-    clippy::if_let_mutex,
-    clippy::implicit_clone,
-    clippy::imprecise_flops,
-    clippy::inefficient_to_string,
-    clippy::invalid_upcast_comparisons,
-    clippy::large_digit_groups,
-    clippy::large_stack_arrays,
-    clippy::large_types_passed_by_value,
-    clippy::let_unit_value,
-    clippy::linkedlist,
-    clippy::lossy_float_literal,
-    clippy::macro_use_imports,
-    clippy::manual_ok_or,
-    clippy::map_err_ignore,
-    clippy::map_flatten,
-    clippy::map_unwrap_or,
-    clippy::match_on_vec_items,
-    clippy::match_same_arms,
-    clippy::match_wild_err_arm,
-    clippy::match_wildcard_for_single_variants,
-    clippy::mem_forget,
-    clippy::mismatched_target_os,
-    clippy::missing_errors_doc,
-    clippy::missing_safety_doc,
-    clippy::mut_mut,
-    clippy::mutex_integer,
-    clippy::needless_borrow,
-    clippy::needless_continue,
-    clippy::needless_for_each,
-    clippy::needless_pass_by_value,
-    clippy::option_option,
-    clippy::path_buf_push_overwrite,
-    clippy::ptr_as_ptr,
-    clippy::ref_option_ref,
-    clippy::rest_pat_in_fully_bound_structs,
-    clippy::same_functions_in_if_condition,
-    clippy::semicolon_if_nothing_returned,
-    clippy::single_match_else,
-    clippy::string_add_assign,
-    clippy::string_add,
-    clippy::string_lit_as_bytes,
-    clippy::string_to_string,
-    clippy::todo,
-    clippy::trait_duplication_in_bounds,
-    clippy::unimplemented,
-    clippy::unnested_or_patterns,
-    clippy::unused_self,
-    clippy::useless_transmute,
-    clippy::verbose_file_reads,
-    clippy::zero_sized_map_values,
-    future_incompatible,
-    nonstandard_style,
-    rust_2018_idioms,
-    rustdoc::missing_crate_level_docs
-)]
-#![allow(clippy::float_cmp)]
 #![allow(clippy::manual_range_contains)]
 
+pub use egui;
 pub use winit;
 
 pub mod clipboard;
 pub mod screen_reader;
 mod window_settings;
-
-#[cfg(feature = "epi")]
-pub mod epi;
 
 pub use window_settings::WindowSettings;
 
@@ -129,17 +49,22 @@ pub struct State {
 }
 
 impl State {
-    /// Initialize with the native `pixels_per_point` (dpi scaling).
-    pub fn new(window: &winit::window::Window) -> Self {
-        Self::from_pixels_per_point(native_pixels_per_point(window))
+    /// Initialize with:
+    /// * `max_texture_side`: e.g. `GL_MAX_TEXTURE_SIZE`
+    /// * the native `pixels_per_point` (dpi scaling).
+    pub fn new(max_texture_side: usize, window: &winit::window::Window) -> Self {
+        Self::from_pixels_per_point(max_texture_side, native_pixels_per_point(window))
     }
 
-    /// Initialize with a given dpi scaling.
-    pub fn from_pixels_per_point(pixels_per_point: f32) -> Self {
+    /// Initialize with:
+    /// * `max_texture_side`: e.g. `GL_MAX_TEXTURE_SIZE`
+    /// * the given `pixels_per_point` (dpi scaling).
+    pub fn from_pixels_per_point(max_texture_side: usize, pixels_per_point: f32) -> Self {
         Self {
             start_time: instant::Instant::now(),
             egui_input: egui::RawInput {
                 pixels_per_point: Some(pixels_per_point),
+                max_texture_side: Some(max_texture_side),
                 ..Default::default()
             },
             pointer_pos_in_points: None,
@@ -453,17 +378,19 @@ impl State {
                 egui::vec2(delta.x as f32, delta.y as f32) / self.pixels_per_point()
             }
         };
-        if cfg!(target_os = "macos") {
-            delta.x *= -1.0; // until https://github.com/rust-windowing/winit/pull/2105 is merged and released
-        }
-        if cfg!(target_os = "windows") {
-            delta.x *= -1.0; // until https://github.com/rust-windowing/winit/pull/2101 is merged and released
-        }
+
+        delta.x *= -1.0; // Winit has inverted hscroll. Remove this line when we update winit after https://github.com/rust-windowing/winit/pull/2105 is merged and released
 
         if self.egui_input.modifiers.ctrl || self.egui_input.modifiers.command {
             // Treat as zoom instead:
             let factor = (delta.y / 200.0).exp();
             self.egui_input.events.push(egui::Event::Zoom(factor));
+        } else if self.egui_input.modifiers.shift {
+            // Treat as horizontal scrolling.
+            // Note: one Mac we already get horizontal scroll events when shift is down.
+            self.egui_input
+                .events
+                .push(egui::Event::Scroll(egui::vec2(delta.x + delta.y, 0.0)));
         } else {
             self.egui_input.events.push(egui::Event::Scroll(delta));
         }
@@ -482,9 +409,10 @@ impl State {
                     self.egui_input.events.push(egui::Event::Copy);
                 } else if is_paste_command(self.egui_input.modifiers, keycode) {
                     if let Some(contents) = self.clipboard.get() {
-                        self.egui_input
-                            .events
-                            .push(egui::Event::Paste(contents.replace("\r\n", "\n")));
+                        let contents = contents.replace("\r\n", "\n");
+                        if !contents.is_empty() {
+                            self.egui_input.events.push(egui::Event::Paste(contents));
+                        }
                     }
                 }
             }
@@ -507,29 +435,39 @@ impl State {
     /// * open any clicked urls
     /// * update the IME
     /// *
-    pub fn handle_output(
+    pub fn handle_platform_output(
         &mut self,
         window: &winit::window::Window,
         egui_ctx: &egui::Context,
-        output: egui::Output,
+        platform_output: egui::PlatformOutput,
     ) {
+        if egui_ctx.options().screen_reader {
+            self.screen_reader
+                .speak(&platform_output.events_description());
+        }
+
+        let egui::PlatformOutput {
+            cursor_icon,
+            open_url,
+            copied_text,
+            events: _,                    // handled above
+            mutable_text_under_cursor: _, // only used in eframe web
+            text_cursor_pos,
+        } = platform_output;
+
         self.current_pixels_per_point = egui_ctx.pixels_per_point(); // someone can have changed it to scale the UI
 
-        if egui_ctx.memory().options.screen_reader {
-            self.screen_reader.speak(&output.events_description());
+        self.set_cursor_icon(window, cursor_icon);
+
+        if let Some(open_url) = open_url {
+            open_url_in_browser(&open_url.url);
         }
 
-        self.set_cursor_icon(window, output.cursor_icon);
-
-        if let Some(open) = output.open_url {
-            open_url(&open.url);
+        if !copied_text.is_empty() {
+            self.clipboard.set(copied_text);
         }
 
-        if !output.copied_text.is_empty() {
-            self.clipboard.set(output.copied_text);
-        }
-
-        if let Some(egui::Pos2 { x, y }) = output.text_cursor_pos {
+        if let Some(egui::Pos2 { x, y }) = text_cursor_pos {
             window.set_ime_position(winit::dpi::LogicalPosition { x, y });
         }
     }
@@ -554,15 +492,15 @@ impl State {
     }
 }
 
-fn open_url(_url: &str) {
+fn open_url_in_browser(_url: &str) {
     #[cfg(feature = "webbrowser")]
     if let Err(err) = webbrowser::open(_url) {
-        eprintln!("Failed to open url: {}", err);
+        tracing::warn!("Failed to open url: {}", err);
     }
 
     #[cfg(not(feature = "webbrowser"))]
     {
-        eprintln!("Cannot open url - feature \"links\" not enabled.");
+        tracing::warn!("Cannot open url - feature \"links\" not enabled.");
     }
 }
 
@@ -694,10 +632,23 @@ fn translate_cursor(cursor_icon: egui::CursorIcon) -> Option<winit::window::Curs
         egui::CursorIcon::NotAllowed => Some(winit::window::CursorIcon::NotAllowed),
         egui::CursorIcon::PointingHand => Some(winit::window::CursorIcon::Hand),
         egui::CursorIcon::Progress => Some(winit::window::CursorIcon::Progress),
+
         egui::CursorIcon::ResizeHorizontal => Some(winit::window::CursorIcon::EwResize),
         egui::CursorIcon::ResizeNeSw => Some(winit::window::CursorIcon::NeswResize),
         egui::CursorIcon::ResizeNwSe => Some(winit::window::CursorIcon::NwseResize),
         egui::CursorIcon::ResizeVertical => Some(winit::window::CursorIcon::NsResize),
+
+        egui::CursorIcon::ResizeEast => Some(winit::window::CursorIcon::EResize),
+        egui::CursorIcon::ResizeSouthEast => Some(winit::window::CursorIcon::SeResize),
+        egui::CursorIcon::ResizeSouth => Some(winit::window::CursorIcon::SResize),
+        egui::CursorIcon::ResizeSouthWest => Some(winit::window::CursorIcon::SwResize),
+        egui::CursorIcon::ResizeWest => Some(winit::window::CursorIcon::WResize),
+        egui::CursorIcon::ResizeNorthWest => Some(winit::window::CursorIcon::NwResize),
+        egui::CursorIcon::ResizeNorth => Some(winit::window::CursorIcon::NResize),
+        egui::CursorIcon::ResizeNorthEast => Some(winit::window::CursorIcon::NeResize),
+        egui::CursorIcon::ResizeColumn => Some(winit::window::CursorIcon::ColResize),
+        egui::CursorIcon::ResizeRow => Some(winit::window::CursorIcon::RowResize),
+
         egui::CursorIcon::Text => Some(winit::window::CursorIcon::Text),
         egui::CursorIcon::VerticalText => Some(winit::window::CursorIcon::VerticalText),
         egui::CursorIcon::Wait => Some(winit::window::CursorIcon::Wait),
@@ -705,3 +656,27 @@ fn translate_cursor(cursor_icon: egui::CursorIcon) -> Option<winit::window::Curs
         egui::CursorIcon::ZoomOut => Some(winit::window::CursorIcon::ZoomOut),
     }
 }
+
+// ---------------------------------------------------------------------------
+
+/// Profiling macro for feature "puffin"
+#[allow(unused_macros)]
+macro_rules! profile_function {
+    ($($arg: tt)*) => {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!($($arg)*);
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use profile_function;
+
+/// Profiling macro for feature "puffin"
+#[allow(unused_macros)]
+macro_rules! profile_scope {
+    ($($arg: tt)*) => {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!($($arg)*);
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use profile_scope;

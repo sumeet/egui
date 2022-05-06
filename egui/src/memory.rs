@@ -7,9 +7,9 @@ use crate::{area, window, Id, IdMap, InputState, LayerId, Pos2, Rect, Style};
 /// The data that egui persists between frames.
 ///
 /// This includes window positions and sizes,
-/// how far the user has scrolled in a `ScrollArea` etc.
+/// how far the user has scrolled in a [`ScrollArea`](crate::ScrollArea) etc.
 ///
-/// If you want this to persist when closing your app you should serialize `Memory` and store it.
+/// If you want this to persist when closing your app you should serialize [`Memory`] and store it.
 /// For this you need to enable the `persistence`.
 ///
 /// If you want to store data for your widgets, you should look at [`Memory::data`]
@@ -19,7 +19,15 @@ use crate::{area, window, Id, IdMap, InputState, LayerId, Pos2, Rect, Style};
 pub struct Memory {
     pub options: Options,
 
-    /// This map stores current states for all widgets with custom `Id`s.
+    /// This map stores some superficial state for all widgets with custom [`Id`]s.
+    ///
+    /// This includes storing if a [`crate::CollapsingHeader`] is open, how far scrolled a
+    /// [`crate::ScrollArea`] is, where the cursor in a [`crate::TextEdit`] is, etc.
+    ///
+    /// This is NOT meant to store any important data. Store that in your own structures!
+    ///
+    /// Each read clones the data, so keep your values cheap to clone.
+    /// If you want to store a lot of data you should wrap it in `Arc<Mutex<…>>` so it is cheap to clone.
     ///
     /// This will be saved between different program runs if you use the `persistence` feature.
     ///
@@ -85,21 +93,40 @@ pub struct Memory {
 // ----------------------------------------------------------------------------
 
 /// Some global options that you can read and write.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Options {
-    /// The default style for new `Ui`:s.
+    /// The default style for new [`Ui`](crate::Ui):s.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) style: epaint::mutex::Arc<Style>,
+    pub(crate) style: std::sync::Arc<Style>,
 
     /// Controls the tessellator.
     pub tessellation_options: epaint::TessellationOptions,
 
     /// This does not at all change the behavior of egui,
-    /// but is a signal to any backend that we want the [`crate::Output::events`] read out loud.
+    /// but is a signal to any backend that we want the [`crate::PlatformOutput::events`] read out loud.
     /// Screen readers is an experimental feature of egui, and not supported on all platforms.
     pub screen_reader: bool,
+
+    /// If true, the most common glyphs (ASCII) are pre-rendered to the texture atlas.
+    ///
+    /// Only the fonts in [`Style::text_styles`] will be pre-cached.
+    ///
+    /// This can lead to fewer texture operations, but may use up the texture atlas quicker
+    /// if you are changing [`Style::text_styles`], of have a lot of text styles.
+    pub preload_font_glyphs: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            style: Default::default(),
+            tessellation_options: Default::default(),
+            screen_reader: false,
+            preload_font_glyphs: true,
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -302,6 +329,11 @@ impl Memory {
         self.areas.layer_id_at(pos, resize_interact_radius_side)
     }
 
+    /// An iterator over all layers. Back-to-front. Top is last.
+    pub fn layer_ids(&self) -> impl ExactSizeIterator<Item = LayerId> + '_ {
+        self.areas.order().iter().copied()
+    }
+
     pub(crate) fn had_focus_last_frame(&self, id: Id) -> bool {
         self.interaction.focus.id_previous_frame == Some(id)
     }
@@ -369,7 +401,7 @@ impl Memory {
         self.interaction.focus.interested_in_focus(id);
     }
 
-    /// Stop editing of active `TextEdit` (if any).
+    /// Stop editing of active [`TextEdit`](crate::TextEdit) (if any).
     #[inline(always)]
     pub fn stop_text_input(&mut self) {
         self.interaction.focus.id = None;
@@ -385,6 +417,11 @@ impl Memory {
         self.interaction.drag_id == Some(id)
     }
 
+    #[inline(always)]
+    pub fn set_dragged_id(&mut self, id: Id) {
+        self.interaction.drag_id = Some(id);
+    }
+
     /// Forget window positions, sizes etc.
     /// Can be used to auto-layout windows.
     pub fn reset_areas(&mut self) {
@@ -396,7 +433,7 @@ impl Memory {
 /// Popups are things like combo-boxes, color pickers, menus etc.
 /// Only one can be be open at a time.
 impl Memory {
-    pub fn is_popup_open(&mut self, popup_id: Id) -> bool {
+    pub fn is_popup_open(&self, popup_id: Id) -> bool {
         self.popup == Some(popup_id) || self.everything_is_visible()
     }
 
@@ -438,8 +475,8 @@ impl Memory {
 
 // ----------------------------------------------------------------------------
 
-/// Keeps track of `Area`s, which are free-floating `Ui`s.
-/// These `Area`s can be in any `Order`.
+/// Keeps track of [`Area`](crate::containers::area::Area)s, which are free-floating [`Ui`](crate::Ui)s.
+/// These [`Area`](crate::containers::area::Area)s can be in any [`Order`](crate::Order).
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -489,9 +526,9 @@ impl Areas {
                     if state.interactable {
                         // Allow us to resize by dragging just outside the window:
                         rect = rect.expand(resize_interact_radius_side);
-                    }
-                    if rect.contains(pos) {
-                        return Some(*layer);
+                        if rect.contains(pos) {
+                            return Some(*layer);
+                        }
                     }
                 }
             }
@@ -541,7 +578,8 @@ impl Areas {
             ..
         } = self;
 
-        *visible_last_frame = std::mem::take(visible_current_frame);
+        std::mem::swap(visible_last_frame, visible_current_frame);
+        visible_current_frame.clear();
         order.sort_by_key(|layer| (layer.order, wants_to_be_on_top.contains(layer)));
         wants_to_be_on_top.clear();
     }

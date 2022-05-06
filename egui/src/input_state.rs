@@ -30,10 +30,18 @@ pub struct InputState {
     pub pointer: PointerState,
 
     /// State of touches, except those covered by PointerState (like clicks and drags).
-    /// (We keep a separate `TouchState` for each encountered touch device.)
+    /// (We keep a separate [`TouchState`] for each encountered touch device.)
     touch_states: BTreeMap<TouchDeviceId, TouchState>,
 
-    /// How many pixels the user scrolled.
+    /// How many points the user scrolled.
+    ///
+    /// The delta dictates how the _content_ should move.
+    ///
+    /// A positive X-value indicates the content is being moved right,
+    /// as when swiping right on a touch-screen or track-pad with natural scrolling.
+    ///
+    /// A positive Y-value indicates the content is being moved down,
+    /// as when swiping down on a touch-screen or track-pad with natural scrolling.
     pub scroll_delta: Vec2,
 
     /// Zoom scale factor this frame (e.g. from ctrl-scroll or pinch gesture).
@@ -48,6 +56,11 @@ pub struct InputState {
 
     /// Also known as device pixel ratio, > 1 for high resolution screens.
     pub pixels_per_point: f32,
+
+    /// Maximum size of one side of a texture.
+    ///
+    /// This depends on the backend.
+    pub max_texture_side: usize,
 
     /// Time in seconds. Relative to whatever. Used for animation.
     pub time: f64,
@@ -82,6 +95,7 @@ impl Default for InputState {
             zoom_factor_delta: 1.0,
             screen_rect: Rect::from_min_size(Default::default(), vec2(10_000.0, 10_000.0)),
             pixels_per_point: 1.0,
+            max_texture_side: 2048,
             time: 0.0,
             unstable_dt: 1.0 / 6.0,
             predicted_dt: 1.0 / 6.0,
@@ -95,9 +109,7 @@ impl Default for InputState {
 impl InputState {
     #[must_use]
     pub fn begin_frame(mut self, new: RawInput) -> InputState {
-        let time = new
-            .time
-            .unwrap_or_else(|| self.time + new.predicted_dt as f64);
+        let time = new.time.unwrap_or(self.time + new.predicted_dt as f64);
         let unstable_dt = (time - self.time) as f32;
         let screen_rect = new.screen_rect.unwrap_or(self.screen_rect);
         self.create_touch_states_for_new_devices(&new.events);
@@ -134,6 +146,7 @@ impl InputState {
             zoom_factor_delta,
             screen_rect,
             pixels_per_point: new.pixels_per_point.unwrap_or(self.pixels_per_point),
+            max_texture_side: new.max_texture_side.unwrap_or(self.max_texture_side),
             time,
             unstable_dt,
             predicted_dt: new.predicted_dt,
@@ -190,6 +203,28 @@ impl InputState {
 
     pub fn wants_repaint(&self) -> bool {
         self.pointer.wants_repaint() || self.scroll_delta != Vec2::ZERO || !self.events.is_empty()
+    }
+
+    /// Check for a key press. If found, `true` is returned and the key pressed is consumed, so that this will only return `true` once.
+    pub fn consume_key(&mut self, modifiers: Modifiers, key: Key) -> bool {
+        let mut match_found = false;
+
+        self.events.retain(|event| {
+            let is_match = matches!(
+                event,
+                Event::Key {
+                    key: ev_key,
+                    modifiers: ev_mods,
+                    pressed: true
+                } if *ev_key == key && ev_mods.matches(modifiers)
+            );
+
+            match_found |= is_match;
+
+            !is_match
+        });
+
+        match_found
     }
 
     /// Was the given key pressed this frame?
@@ -271,7 +306,7 @@ impl InputState {
     /// ```
     ///
     /// By far not all touch devices are supported, and the details depend on the `egui`
-    /// integration backend you are using. `egui_web` supports multi touch for most mobile
+    /// integration backend you are using. `eframe` web supports multi touch for most mobile
     /// devices, but not for a `Trackpad` on `MacOS`, for example. The backend has to be able to
     /// capture native touch events, but many browsers seem to pass such events only for touch
     /// _screens_, but not touch _pads._
@@ -295,7 +330,7 @@ impl InputState {
     }
 
     /// Scans `events` for device IDs of touch devices we have not seen before,
-    /// and creates a new `TouchState` for each such device.
+    /// and creates a new [`TouchState`] for each such device.
     fn create_touch_states_for_new_devices(&mut self, events: &[Event]) {
         for event in events {
             if let Event::Touch { device_id, .. } = event {
@@ -314,7 +349,7 @@ impl InputState {
 pub(crate) struct Click {
     pub pos: Pos2,
     pub button: PointerButton,
-    /// 1 or 2 (double-click)
+    /// 1 or 2 (double-click) or 3 (triple-click)
     pub count: u32,
     /// Allows you to check for e.g. shift-click
     pub modifiers: Modifiers,
@@ -324,18 +359,24 @@ impl Click {
     pub fn is_double(&self) -> bool {
         self.count == 2
     }
+    pub fn is_triple(&self) -> bool {
+        self.count == 3
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PointerEvent {
     Moved(Pos2),
-    Pressed(Pos2),
+    Pressed {
+        position: Pos2,
+        button: PointerButton,
+    },
     Released(Option<Click>),
 }
 
 impl PointerEvent {
     pub fn is_press(&self) -> bool {
-        matches!(self, PointerEvent::Pressed(_))
+        matches!(self, PointerEvent::Pressed { .. })
     }
     pub fn is_release(&self) -> bool {
         matches!(self, PointerEvent::Released(_))
@@ -394,6 +435,10 @@ pub struct PointerState {
     /// Used to check for double-clicks.
     last_click_time: f64,
 
+    /// When did the pointer get click two clicks ago?
+    /// Used to check for triple-clicks.
+    last_last_click_time: f64,
+
     /// All button events that occurred this frame
     pub(crate) pointer_events: Vec<PointerEvent>,
 }
@@ -412,6 +457,7 @@ impl Default for PointerState {
             press_start_time: None,
             has_moved_too_much_for_a_click: false,
             last_click_time: std::f64::NEG_INFINITY,
+            last_last_click_time: std::f64::NEG_INFINITY,
             pointer_events: vec![],
         }
     }
@@ -466,15 +512,27 @@ impl PointerState {
                         self.press_origin = Some(pos);
                         self.press_start_time = Some(time);
                         self.has_moved_too_much_for_a_click = false;
-                        self.pointer_events.push(PointerEvent::Pressed(pos));
+                        self.pointer_events.push(PointerEvent::Pressed {
+                            position: pos,
+                            button,
+                        });
                     } else {
                         let clicked = self.could_any_button_be_click();
 
                         let click = if clicked {
                             let double_click =
                                 (time - self.last_click_time) < MAX_DOUBLE_CLICK_DELAY;
-                            let count = if double_click { 2 } else { 1 };
+                            let triple_click =
+                                (time - self.last_last_click_time) < (MAX_DOUBLE_CLICK_DELAY * 2.0);
+                            let count = if triple_click {
+                                3
+                            } else if double_click {
+                                2
+                            } else {
+                                1
+                            };
 
+                            self.last_last_click_time = self.last_click_time;
                             self.last_click_time = time;
 
                             Some(Click {
@@ -615,6 +673,23 @@ impl PointerState {
         self.pointer_events.iter().any(|event| event.is_release())
     }
 
+    /// Was the button given released this frame?
+    pub fn button_released(&self, button: PointerButton) -> bool {
+        self.pointer_events
+            .iter()
+            .any(|event| matches!(event, &PointerEvent::Released(Some(Click{button: b, ..})) if button == b))
+    }
+
+    /// Was the primary button released this frame?
+    pub fn primary_released(&self) -> bool {
+        self.button_released(PointerButton::Primary)
+    }
+
+    /// Was the secondary button released this frame?
+    pub fn secondary_released(&self) -> bool {
+        self.button_released(PointerButton::Secondary)
+    }
+
     /// Is any pointer button currently down?
     pub fn any_down(&self) -> bool {
         self.down.iter().any(|&down| down)
@@ -623,6 +698,23 @@ impl PointerState {
     /// Were there any type of click this frame?
     pub fn any_click(&self) -> bool {
         self.pointer_events.iter().any(|event| event.is_click())
+    }
+
+    /// Was the button given clicked this frame?
+    pub fn button_clicked(&self, button: PointerButton) -> bool {
+        self.pointer_events
+            .iter()
+            .any(|event| matches!(event, &PointerEvent::Pressed { button: b, .. } if button == b))
+    }
+
+    /// Was the primary button clicked this frame?
+    pub fn primary_clicked(&self) -> bool {
+        self.button_clicked(PointerButton::Primary)
+    }
+
+    /// Was the secondary button clicked this frame?
+    pub fn secondary_clicked(&self) -> bool {
+        self.button_clicked(PointerButton::Secondary)
     }
 
     // /// Was this button pressed (`!down -> down`) this frame?
@@ -692,6 +784,7 @@ impl InputState {
             zoom_factor_delta,
             screen_rect,
             pixels_per_point,
+            max_texture_side,
             time,
             unstable_dt,
             predicted_dt,
@@ -700,7 +793,12 @@ impl InputState {
             events,
         } = self;
 
-        ui.style_mut().body_text_style = epaint::TextStyle::Monospace;
+        ui.style_mut()
+            .text_styles
+            .get_mut(&crate::TextStyle::Body)
+            .unwrap()
+            .family = crate::FontFamily::Monospace;
+
         ui.collapsing("Raw Input", |ui| raw.ui(ui));
 
         crate::containers::CollapsingHeader::new("🖱 Pointer")
@@ -719,8 +817,12 @@ impl InputState {
         ui.label(format!("zoom_factor_delta: {:4.2}x", zoom_factor_delta));
         ui.label(format!("screen_rect: {:?} points", screen_rect));
         ui.label(format!(
-            "{:?} physical pixels for each logical point",
+            "{} physical pixels for each logical point",
             pixels_per_point
+        ));
+        ui.label(format!(
+            "max texture size (on each side): {}",
+            max_texture_side
         ));
         ui.label(format!("time: {:.3} s", time));
         ui.label(format!(
@@ -730,8 +832,11 @@ impl InputState {
         ui.label(format!("predicted_dt: {:.1} ms", 1e3 * predicted_dt));
         ui.label(format!("modifiers: {:#?}", modifiers));
         ui.label(format!("keys_down: {:?}", keys_down));
-        ui.label(format!("events: {:?}", events))
-            .on_hover_text("key presses etc");
+        ui.scope(|ui| {
+            ui.set_min_height(150.0);
+            ui.label(format!("events: {:#?}", events))
+                .on_hover_text("key presses etc");
+        });
     }
 }
 
@@ -749,6 +854,7 @@ impl PointerState {
             press_start_time,
             has_moved_too_much_for_a_click,
             last_click_time,
+            last_last_click_time,
             pointer_events,
         } = self;
 
@@ -767,6 +873,7 @@ impl PointerState {
             has_moved_too_much_for_a_click
         ));
         ui.label(format!("last_click_time: {:#?}", last_click_time));
+        ui.label(format!("last_last_click_time: {:#?}", last_last_click_time));
         ui.label(format!("pointer_events: {:?}", pointer_events));
     }
 }

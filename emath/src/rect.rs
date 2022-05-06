@@ -5,18 +5,29 @@ use crate::*;
 
 /// A rectangular region of space.
 ///
-/// Normally given in points, e.g. logical pixels.
+/// Usually a [`Rect`] has a positive (or zero) size,
+/// and then [`Self::min`] `<=` [`Self::max`].
+/// In these cases [`Self::min`] is the left-top corner
+/// and [`Self::max`] is the right-bottom corner.
+///
+/// A rectangle is allowed to have a negative size, which happens when the order
+/// of `min` and `max` are swapped. These are usually a sign of an error.
+///
+/// Normally the unit is points (logical pixels) in screen space coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "bytemuck", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct Rect {
+    /// One of the corners of the rectangle, usually the left top one.
     pub min: Pos2,
+
+    /// The other corner, opposing [`Self::min`]. Usually the right bottom one.
     pub max: Pos2,
 }
 
 impl Rect {
-    /// Infinite rectangle that contains everything.
+    /// Infinite rectangle that contains every point.
     pub const EVERYTHING: Self = Self {
         min: pos2(-INFINITY, -INFINITY),
         max: pos2(INFINITY, INFINITY),
@@ -25,19 +36,14 @@ impl Rect {
     /// The inverse of [`Self::EVERYTHING`]: stretches from positive infinity to negative infinity.
     /// Contains no points.
     ///
-    /// This is useful as the seed for bounding bounding boxes.
-    ///
-    /// ```
-    /// # use emath::*;
-    /// let inf = f32::INFINITY;
-    /// assert!(Rect::NOTHING.size() == Vec2::splat(-inf));
-    /// assert!(Rect::NOTHING.contains(pos2(0.0, 0.0)) == false);
-    /// ```
+    /// This is useful as the seed for bounding boxes.
     ///
     /// # Example:
     /// ```
     /// # use emath::*;
     /// let mut rect = Rect::NOTHING;
+    /// assert!(rect.size() == Vec2::splat(-f32::INFINITY));
+    /// assert!(rect.contains(pos2(0.0, 0.0)) == false);
     /// rect.extend_with(pos2(2.0, 1.0));
     /// rect.extend_with(pos2(0.0, 3.0));
     /// assert_eq!(rect, Rect::from_min_max(pos2(0.0, 1.0), pos2(2.0, 3.0)))
@@ -47,10 +53,10 @@ impl Rect {
         max: pos2(-INFINITY, -INFINITY),
     };
 
-    /// An invalid `Rect` filled with [`f32::NAN`];
+    /// An invalid [`Rect`] filled with [`f32::NAN`];
     pub const NAN: Self = Self {
         min: pos2(f32::NAN, f32::NAN),
-        max: pos2(-f32::NAN, -f32::NAN),
+        max: pos2(f32::NAN, f32::NAN),
     };
 
     #[inline(always)]
@@ -58,6 +64,7 @@ impl Rect {
         Rect { min, max }
     }
 
+    /// left-top corner plus a size (stretching right-down).
     #[inline(always)]
     pub fn from_min_size(min: Pos2, size: Vec2) -> Self {
         Rect {
@@ -82,6 +89,7 @@ impl Rect {
         }
     }
 
+    /// Returns the bounding rectangle of the two points.
     #[inline]
     pub fn from_two_pos(a: Pos2, b: Pos2) -> Self {
         Rect {
@@ -90,7 +98,7 @@ impl Rect {
         }
     }
 
-    /// Bounding-box around the points
+    /// Bounding-box around the points.
     pub fn from_points(points: &[Pos2]) -> Self {
         let mut rect = Rect::NOTHING;
         for &p in points {
@@ -99,7 +107,7 @@ impl Rect {
         rect
     }
 
-    /// A `Rect` that contains every point to the right of the given X coordinate.
+    /// A [`Rect`] that contains every point to the right of the given X coordinate.
     #[inline]
     pub fn everything_right_of(left_x: f32) -> Self {
         let mut rect = Self::EVERYTHING;
@@ -107,7 +115,7 @@ impl Rect {
         rect
     }
 
-    /// A `Rect` that contains every point to the left of the given X coordinate.
+    /// A [`Rect`] that contains every point to the left of the given X coordinate.
     #[inline]
     pub fn everything_left_of(right_x: f32) -> Self {
         let mut rect = Self::EVERYTHING;
@@ -115,7 +123,7 @@ impl Rect {
         rect
     }
 
-    /// A `Rect` that contains every point below a certain y coordinate
+    /// A [`Rect`] that contains every point below a certain y coordinate
     #[inline]
     pub fn everything_below(top_y: f32) -> Self {
         let mut rect = Self::EVERYTHING;
@@ -123,7 +131,7 @@ impl Rect {
         rect
     }
 
-    /// A `Rect` that contains every point above a certain y coordinate
+    /// A [`Rect`] that contains every point above a certain y coordinate
     #[inline]
     pub fn everything_above(bottom_y: f32) -> Self {
         let mut rect = Self::EVERYTHING;
@@ -161,7 +169,7 @@ impl Rect {
         Rect::from_min_size(self.min + amnt, self.size())
     }
 
-    /// Rotate the bounds (will expand the `Rect`)
+    /// Rotate the bounds (will expand the [`Rect`])
     #[must_use]
     #[inline]
     pub fn rotate_bb(self, rot: crate::Rot2) -> Self {
@@ -238,7 +246,7 @@ impl Rect {
         self.max.y = self.max.y.max(y);
     }
 
-    /// The union of two bounding rectangle, i.e. the minimum `Rect`
+    /// The union of two bounding rectangle, i.e. the minimum [`Rect`]
     /// that contains both input rectangles.
     #[inline(always)]
     #[must_use]
@@ -249,7 +257,7 @@ impl Rect {
         }
     }
 
-    /// The intersection of two `Rect`, i.e. the area covered by both.
+    /// The intersection of two [`Rect`], i.e. the area covered by both.
     #[inline]
     #[must_use]
     pub fn intersect(self, other: Rect) -> Self {
@@ -309,6 +317,17 @@ impl Rect {
         self.width() * self.height()
     }
 
+    /// The distance from the rect to the position.
+    ///
+    /// The distance is zero when the position is in the interior of the rectangle.
+    #[inline]
+    pub fn distance_to_pos(&self, pos: Pos2) -> f32 {
+        self.distance_sq_to_pos(pos).sqrt()
+    }
+
+    /// The distance from the rect to the position, squared.
+    ///
+    /// The distance is zero when the position is in the interior of the rectangle.
     #[inline]
     pub fn distance_sq_to_pos(&self, pos: Pos2) -> f32 {
         let dx = if self.min.x > pos.x {
@@ -328,6 +347,25 @@ impl Rect {
         };
 
         dx * dx + dy * dy
+    }
+
+    /// Signed distance to the edge of the box.
+    ///
+    /// Negative inside the box.
+    pub fn signed_distance_to_pos(&self, pos: Pos2) -> f32 {
+        let edge_distances = (pos - self.center()).abs() - self.size() * 0.5;
+        let inside_dist = edge_distances.x.max(edge_distances.y).min(0.0);
+        let outside_dist = edge_distances.max(Vec2::ZERO).length();
+        inside_dist + outside_dist
+    }
+
+    /// Linearly interpolate so that `[0, 0]` is [`Self::min`] and
+    /// `[1, 1]` is [`Self::max`].
+    pub fn lerp(&self, t: Vec2) -> Pos2 {
+        Pos2 {
+            x: lerp(self.min.x..=self.max.x, t.x),
+            y: lerp(self.min.y..=self.max.y, t.y),
+        }
     }
 
     #[inline(always)]

@@ -1,20 +1,22 @@
+use std::ops::RangeInclusive;
+
 use crate::*;
 
 /// State that is collected during a frame and then cleared.
 /// Short-term (single frame) memory.
 #[derive(Clone)]
 pub(crate) struct FrameState {
-    /// All `Id`s that were used this frame.
-    /// Used to debug `Id` clashes of widgets.
+    /// All [`Id`]s that were used this frame.
+    /// Used to debug [`Id`] clashes of widgets.
     pub(crate) used_ids: IdMap<Rect>,
 
     /// Starts off as the screen_rect, shrinks as panels are added.
-    /// The `CentralPanel` does not change this.
+    /// The [`CentralPanel`] does not change this.
     /// This is the area available to Window's.
     pub(crate) available_rect: Rect,
 
     /// Starts off as the screen_rect, shrinks as panels are added.
-    /// The `CentralPanel` retracts from this.
+    /// The [`CentralPanel`] retracts from this.
     pub(crate) unused_rect: Rect,
 
     /// How much space is used by panels.
@@ -25,10 +27,13 @@ pub(crate) struct FrameState {
     /// Initialized to `None` at the start of each frame.
     pub(crate) tooltip_rect: Option<(Id, Rect, usize)>,
 
-    /// Cleared by the first `ScrollArea` that makes use of it.
+    /// Set to [`InputState::scroll_delta`] on the start of each frame.
+    ///
+    /// Cleared by the first [`ScrollArea`] that makes use of it.
     pub(crate) scroll_delta: Vec2, // TODO: move to a Mutex inside of `InputState` ?
+
     /// horizontal, vertical
-    pub(crate) scroll_target: [Option<(f32, Align)>; 2],
+    pub(crate) scroll_target: [Option<(RangeInclusive<f32>, Option<Align>)>; 2],
 }
 
 impl Default for FrameState {
@@ -40,7 +45,7 @@ impl Default for FrameState {
             used_by_panels: Rect::NAN,
             tooltip_rect: None,
             scroll_delta: Vec2::ZERO,
-            scroll_target: [None; 2],
+            scroll_target: [None, None],
         }
     }
 }
@@ -63,7 +68,7 @@ impl FrameState {
         *used_by_panels = Rect::NOTHING;
         *tooltip_rect = None;
         *scroll_delta = input.scroll_delta;
-        *scroll_target = [None; 2];
+        *scroll_target = [None, None];
     }
 
     /// How much space is still available after panels has been added.

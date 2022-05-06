@@ -125,6 +125,7 @@ impl ToString for LineStyle {
 
 // ----------------------------------------------------------------------------
 
+/// Determines whether a plot element is vertically or horizontally oriented.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Orientation {
     Horizontal,
@@ -139,18 +140,10 @@ impl Default for Orientation {
 
 // ----------------------------------------------------------------------------
 
+#[derive(Default)]
 pub struct Values {
     pub(super) values: Vec<Value>,
     generator: Option<ExplicitGenerator>,
-}
-
-impl Default for Values {
-    fn default() -> Self {
-        Self {
-            values: Vec::new(),
-            generator: None,
-        }
-    }
 }
 
 impl Values {
@@ -271,11 +264,19 @@ impl Values {
     }
 
     pub(super) fn get_bounds(&self) -> PlotBounds {
-        let mut bounds = PlotBounds::NOTHING;
-        self.values
-            .iter()
-            .for_each(|value| bounds.extend_with(value));
-        bounds
+        if self.values.is_empty() {
+            if let Some(generator) = &self.generator {
+                generator.estimate_bounds()
+            } else {
+                PlotBounds::NOTHING
+            }
+        } else {
+            let mut bounds = PlotBounds::NOTHING;
+            for value in &self.values {
+                bounds.extend_with(value);
+            }
+            bounds
+        }
     }
 }
 
@@ -297,7 +298,7 @@ pub enum MarkerShape {
 
 impl MarkerShape {
     /// Get a vector containing all marker shapes.
-    pub fn all() -> impl Iterator<Item = MarkerShape> {
+    pub fn all() -> impl ExactSizeIterator<Item = MarkerShape> {
         [
             Self::Circle,
             Self::Diamond,
@@ -340,9 +341,23 @@ struct ExplicitGenerator {
     points: usize,
 }
 
+impl ExplicitGenerator {
+    fn estimate_bounds(&self) -> PlotBounds {
+        let min_x = *self.x_range.start();
+        let max_x = *self.x_range.end();
+        let min_y = (self.function)(min_x);
+        let max_y = (self.function)(max_x);
+        // TODO: sample some more points
+        PlotBounds {
+            min: [min_x, min_y],
+            max: [max_x, max_y],
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 
-/// Result of [`PlotItem::find_closest()`] search, identifies an element inside the item for immediate use
+/// Result of [`super::PlotItem::find_closest()`] search, identifies an element inside the item for immediate use
 pub(crate) struct ClosestElem {
     /// Position of hovered-over value (or bar/box-plot/...) in PlotItem
     pub index: usize,

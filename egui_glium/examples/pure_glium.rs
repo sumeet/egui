@@ -1,26 +1,8 @@
-//! Example how to use pure `egui_glium` without [`epi`].
+//! Example how to use `egui_glium`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use glium::glutin;
-
-fn create_display(event_loop: &glutin::event_loop::EventLoop<()>) -> glium::Display {
-    let window_builder = glutin::window::WindowBuilder::new()
-        .with_resizable(true)
-        .with_inner_size(glutin::dpi::LogicalSize {
-            width: 800.0,
-            height: 600.0,
-        })
-        .with_title("egui_glium example");
-
-    let context_builder = glutin::ContextBuilder::new()
-        .with_depth_buffer(0)
-        .with_srgb(true)
-        .with_stencil_buffer(0)
-        .with_vsync(true);
-
-    glium::Display::new(window_builder, context_builder, event_loop).unwrap()
-}
 
 fn main() {
     let event_loop = glutin::event_loop::EventLoop::with_user_event();
@@ -32,7 +14,7 @@ fn main() {
         let mut redraw = || {
             let mut quit = false;
 
-            let (needs_repaint, shapes) = egui_glium.run(&display, |egui_ctx| {
+            let needs_repaint = egui_glium.run(&display, |egui_ctx| {
                 egui::SidePanel::left("my_side_panel").show(egui_ctx, |ui| {
                     ui.heading("Hello World!");
                     if ui.button("Quit").clicked() {
@@ -59,7 +41,7 @@ fn main() {
 
                 // draw things behind egui here
 
-                egui_glium.paint(&display, &mut target, shapes);
+                egui_glium.paint(&display, &mut target);
 
                 // draw things on top of egui here
 
@@ -88,4 +70,22 @@ fn main() {
             _ => (),
         }
     });
+}
+
+fn create_display(event_loop: &glutin::event_loop::EventLoop<()>) -> glium::Display {
+    let window_builder = glutin::window::WindowBuilder::new()
+        .with_resizable(true)
+        .with_inner_size(glutin::dpi::LogicalSize {
+            width: 800.0,
+            height: 600.0,
+        })
+        .with_title("egui_glium example");
+
+    let context_builder = glutin::ContextBuilder::new()
+        .with_depth_buffer(0)
+        .with_srgb(true)
+        .with_stencil_buffer(0)
+        .with_vsync(true);
+
+    glium::Display::new(window_builder, context_builder, event_loop).unwrap()
 }

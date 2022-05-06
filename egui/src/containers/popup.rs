@@ -13,11 +13,11 @@ pub(crate) struct MonoState {
 
 impl MonoState {
     fn load(ctx: &Context) -> Option<Self> {
-        ctx.memory().data.get_temp(Id::null())
+        ctx.data().get_temp(Id::null())
     }
 
     fn store(self, ctx: &Context) {
-        ctx.memory().data.insert_temp(Id::null(), self);
+        ctx.data().insert_temp(Id::null(), self);
     }
 
     fn tooltip_size(&self, id: Id, index: usize) -> Option<Vec2> {
@@ -298,11 +298,11 @@ pub fn popup_below_widget<R>(
                 // Note: we use a separate clip-rect for this area, so the popup can be outside the parent.
                 // See https://github.com/emilk/egui/issues/825
                 let frame = Frame::popup(ui.style());
-                let frame_margin = frame.margin;
+                let frame_margin = frame.inner_margin + frame.outer_margin;
                 frame
                     .show(ui, |ui| {
                         ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                            ui.set_width(widget_response.rect.width() - 2.0 * frame_margin.x);
+                            ui.set_width(widget_response.rect.width() - frame_margin.sum().x);
                             add_contents(ui)
                         })
                         .inner

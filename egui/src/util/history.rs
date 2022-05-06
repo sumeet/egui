@@ -97,7 +97,7 @@ where
         self.values.back_mut().map(|(_, value)| value)
     }
 
-    /// Amount of time contained from start to end in this `History`.
+    /// Amount of time contained from start to end in this [`History`].
     pub fn duration(&self) -> f32 {
         if let (Some(front), Some(back)) = (self.values.front(), self.values.back()) {
             (back.0 - front.0) as f32
@@ -109,11 +109,11 @@ where
     /// `(time, value)` pairs
     /// Time difference between values can be zero, but never negative.
     // TODO: impl IntoIter
-    pub fn iter(&'_ self) -> impl Iterator<Item = (f64, T)> + '_ {
+    pub fn iter(&'_ self) -> impl ExactSizeIterator<Item = (f64, T)> + '_ {
         self.values.iter().map(|(time, value)| (*time, *value))
     }
 
-    pub fn values(&'_ self) -> impl Iterator<Item = T> + '_ {
+    pub fn values(&'_ self) -> impl ExactSizeIterator<Item = T> + '_ {
         self.values.iter().map(|(_time, value)| *value)
     }
 
@@ -132,7 +132,7 @@ where
         self.flush(now);
     }
 
-    /// Mean time difference between values in this `History`.
+    /// Mean time difference between values in this [`History`].
     pub fn mean_time_interval(&self) -> Option<f32> {
         if let (Some(first), Some(last)) = (self.values.front(), self.values.back()) {
             let n = self.len();

@@ -23,51 +23,59 @@ fn background_checkers(painter: &Painter, rect: Rect) {
         return;
     }
 
-    let mut top_color = Color32::from_gray(128);
-    let mut bottom_color = Color32::from_gray(32);
+    let dark_color = Color32::from_gray(32);
+    let bright_color = Color32::from_gray(128);
+
     let checker_size = Vec2::splat(rect.height() / 2.0);
     let n = (rect.width() / checker_size.x).round() as u32;
 
     let mut mesh = Mesh::default();
+    mesh.add_colored_rect(rect, dark_color);
+
+    let mut top = true;
     for i in 0..n {
         let x = lerp(rect.left()..=rect.right(), i as f32 / (n as f32));
-        mesh.add_colored_rect(
-            Rect::from_min_size(pos2(x, rect.top()), checker_size),
-            top_color,
-        );
-        mesh.add_colored_rect(
-            Rect::from_min_size(pos2(x, rect.center().y), checker_size),
-            bottom_color,
-        );
-        std::mem::swap(&mut top_color, &mut bottom_color);
+        let small_rect = if top {
+            Rect::from_min_size(pos2(x, rect.top()), checker_size)
+        } else {
+            Rect::from_min_size(pos2(x, rect.center().y), checker_size)
+        };
+        mesh.add_colored_rect(small_rect, bright_color);
+        top = !top;
     }
     painter.add(Shape::mesh(mesh));
 }
 
 /// Show a color with background checkers to demonstrate transparency (if any).
-pub fn show_color(ui: &mut Ui, color: impl Into<Hsva>, desired_size: Vec2) -> Response {
-    show_hsva(ui, color.into(), desired_size)
+pub fn show_color(ui: &mut Ui, color: impl Into<Color32>, desired_size: Vec2) -> Response {
+    show_color32(ui, color.into(), desired_size)
 }
 
-fn show_hsva(ui: &mut Ui, color: Hsva, desired_size: Vec2) -> Response {
+fn show_color32(ui: &mut Ui, color: Color32, desired_size: Vec2) -> Response {
     let (rect, response) = ui.allocate_at_least(desired_size, Sense::hover());
     if ui.is_rect_visible(rect) {
-        background_checkers(ui.painter(), rect);
-        if true {
-            let left = Rect::from_min_max(rect.left_top(), rect.center_bottom());
-            let right = Rect::from_min_max(rect.center_top(), rect.right_bottom());
-            ui.painter().rect_filled(left, 0.0, color);
-            ui.painter().rect_filled(right, 0.0, color.to_opaque());
-        } else {
-            ui.painter().add(RectShape {
-                rect,
-                corner_radius: 2.0,
-                fill: color.into(),
-                stroke: Stroke::new(3.0, color.to_opaque()),
-            });
-        }
+        show_color_at(ui.painter(), color, rect);
     }
     response
+}
+
+/// Show a color with background checkers to demonstrate transparency (if any).
+pub fn show_color_at(painter: &Painter, color: Color32, rect: Rect) {
+    if color.is_opaque() {
+        painter.rect_filled(rect, 0.0, color);
+    } else {
+        // Transparent: how both the transparent and opaque versions of the color
+        background_checkers(painter, rect);
+
+        if color == Color32::TRANSPARENT {
+            // There is no opaque version, so just show the background checkers
+        } else {
+            let left = Rect::from_min_max(rect.left_top(), rect.center_bottom());
+            let right = Rect::from_min_max(rect.center_top(), rect.right_bottom());
+            painter.rect_filled(left, 0.0, color);
+            painter.rect_filled(right, 0.0, color.to_opaque());
+        }
+    }
 }
 
 fn color_button(ui: &mut Ui, color: Color32, open: bool) -> Response {
@@ -83,16 +91,11 @@ fn color_button(ui: &mut Ui, color: Color32, open: bool) -> Response {
         };
         let rect = rect.expand(visuals.expansion);
 
-        background_checkers(ui.painter(), rect);
+        show_color_at(ui.painter(), color, rect);
 
-        let left_half = Rect::from_min_max(rect.left_top(), rect.center_bottom());
-        let right_half = Rect::from_min_max(rect.center_top(), rect.right_bottom());
-        ui.painter().rect_filled(left_half, 0.0, color);
-        ui.painter().rect_filled(right_half, 0.0, color.to_opaque());
-
-        let corner_radius = visuals.corner_radius.at_most(2.0);
+        let rounding = visuals.rounding.at_most(2.0);
         ui.painter()
-            .rect_stroke(rect, corner_radius, (2.0, visuals.bg_fill)); // fill is intentional, because default style has no border
+            .rect_stroke(rect, rounding, (2.0, visuals.bg_fill)); // fill is intentional, because default style has no border
     }
 
     response
@@ -139,9 +142,9 @@ fn color_slider_1d(ui: &mut Ui, value: &mut f32, color_at: impl Fn(f32) -> Color
             let picked_color = color_at(*value);
             ui.painter().add(Shape::convex_polygon(
                 vec![
-                    pos2(x - r, rect.bottom()),
-                    pos2(x + r, rect.bottom()),
-                    pos2(x, rect.center().y),
+                    pos2(x, rect.center().y),   // tip
+                    pos2(x + r, rect.bottom()), // right bottom
+                    pos2(x - r, rect.bottom()), // left bottom
                 ],
                 picked_color,
                 Stroke::new(visuals.fg_stroke.width, contrast_color(picked_color)),
@@ -308,8 +311,10 @@ fn color_picker_hsvag_2d(ui: &mut Ui, hsva: &mut HsvaGamma, alpha: Alpha) {
     color_slider_2d(ui, v, s, |v, s| HsvaGamma { s, v, ..opaque }.into());
 }
 
+//// Shows a color picker where the user can change the given [`Hsva`] color.
+///
 /// Returns `true` on change.
-fn color_picker_hsva_2d(ui: &mut Ui, hsva: &mut Hsva, alpha: Alpha) -> bool {
+pub fn color_picker_hsva_2d(ui: &mut Ui, hsva: &mut Hsva, alpha: Alpha) -> bool {
     let mut hsvag = HsvaGamma::from(*hsva);
     ui.vertical(|ui| {
         color_picker_hsvag_2d(ui, &mut hsvag, alpha);
@@ -323,7 +328,7 @@ fn color_picker_hsva_2d(ui: &mut Ui, hsva: &mut Hsva, alpha: Alpha) -> bool {
     }
 }
 
-/// Shows a color picker where the user can change the given color.
+/// Shows a color picker where the user can change the given [`Color32`] color.
 ///
 /// Returns `true` on change.
 pub fn color_picker_color32(ui: &mut Ui, srgba: &mut Color32, alpha: Alpha) -> bool {
@@ -335,21 +340,21 @@ pub fn color_picker_color32(ui: &mut Ui, srgba: &mut Color32, alpha: Alpha) -> b
 }
 
 pub fn color_edit_button_hsva(ui: &mut Ui, hsva: &mut Hsva, alpha: Alpha) -> Response {
-    let pupup_id = ui.auto_id_with("popup");
-    let open = ui.memory().is_popup_open(pupup_id);
+    let popup_id = ui.auto_id_with("popup");
+    let open = ui.memory().is_popup_open(popup_id);
     let mut button_response = color_button(ui, (*hsva).into(), open);
     if ui.style().explanation_tooltips {
         button_response = button_response.on_hover_text("Click to edit color");
     }
 
     if button_response.clicked() {
-        ui.memory().toggle_popup(pupup_id);
+        ui.memory().toggle_popup(popup_id);
     }
     // TODO: make it easier to show a temporary popup that closes when you click outside it
-    if ui.memory().is_popup_open(pupup_id) {
-        let area_response = Area::new(pupup_id)
+    if ui.memory().is_popup_open(popup_id) {
+        let area_response = Area::new(popup_id)
             .order(Order::Foreground)
-            .default_pos(button_response.rect.max)
+            .current_pos(button_response.rect.max)
             .show(ui.ctx(), |ui| {
                 ui.spacing_mut().slider_width = 210.0;
                 Frame::popup(ui.style()).show(ui, |ui| {
@@ -413,19 +418,19 @@ pub fn color_edit_button_rgb(ui: &mut Ui, rgb: &mut [f32; 3]) -> Response {
     response
 }
 
-// To ensure we keep hue slider when `srgba` is gray we store the full `Hsva` in a cache:
+// To ensure we keep hue slider when `srgba` is gray we store the full [`Hsva`] in a cache:
 fn color_cache_get(ctx: &Context, rgba: impl Into<Rgba>) -> Hsva {
     let rgba = rgba.into();
     use_color_cache(ctx, |cc| cc.get(&rgba).cloned()).unwrap_or_else(|| Hsva::from(rgba))
 }
 
-// To ensure we keep hue slider when `srgba` is gray we store the full `Hsva` in a cache:
+// To ensure we keep hue slider when `srgba` is gray we store the full [`Hsva`] in a cache:
 fn color_cache_set(ctx: &Context, rgba: impl Into<Rgba>, hsva: Hsva) {
     let rgba = rgba.into();
     use_color_cache(ctx, |cc| cc.set(rgba, hsva));
 }
 
-// To ensure we keep hue slider when `srgba` is gray we store the full `Hsva` in a cache:
+// To ensure we keep hue slider when `srgba` is gray we store the full [`Hsva`] in a cache:
 fn use_color_cache<R>(ctx: &Context, f: impl FnOnce(&mut FixedCache<Rgba, Hsva>) -> R) -> R {
-    f(ctx.memory().data.get_temp_mut_or_default(Id::null()))
+    f(ctx.data().get_temp_mut_or_default(Id::null()))
 }

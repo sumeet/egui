@@ -67,7 +67,7 @@ impl Button {
         }
     }
 
-    /// If `true`, the text will wrap to stay within the max width of the `Ui`.
+    /// If `true`, the text will wrap to stay within the max width of the [`Ui`].
     ///
     /// By default [`Self::wrap`] will be true in vertical layouts
     /// and horizontal layouts with wrapping,
@@ -180,7 +180,7 @@ impl Widget for Button {
                 let stroke = stroke.unwrap_or(visuals.bg_stroke);
                 ui.painter().rect(
                     rect.expand(visuals.expansion),
-                    visuals.corner_radius,
+                    visuals.rounding,
                     fill,
                     stroke,
                 );
@@ -237,15 +237,23 @@ impl<'a> Widget for Checkbox<'a> {
 
         let spacing = &ui.spacing();
         let icon_width = spacing.icon_width;
-        let icon_spacing = ui.spacing().icon_spacing;
-        let button_padding = spacing.button_padding;
-        let total_extra = button_padding + vec2(icon_width + icon_spacing, 0.0) + button_padding;
+        let icon_spacing = spacing.icon_spacing;
 
-        let wrap_width = ui.available_width() - total_extra.x;
-        let text = text.into_galley(ui, None, wrap_width, TextStyle::Button);
+        let (text, mut desired_size) = if text.is_empty() {
+            (None, vec2(icon_width, 0.0))
+        } else {
+            let total_extra = vec2(icon_width + icon_spacing, 0.0);
 
-        let mut desired_size = total_extra + text.size();
-        desired_size = desired_size.at_least(spacing.interact_size);
+            let wrap_width = ui.available_width() - total_extra.x;
+            let text = text.into_galley(ui, None, wrap_width, TextStyle::Button);
+
+            let mut desired_size = total_extra + text.size();
+            desired_size = desired_size.at_least(spacing.interact_size);
+
+            (Some(text), desired_size)
+        };
+
+        desired_size = desired_size.at_least(Vec2::splat(spacing.interact_size.y));
         desired_size.y = desired_size.y.max(icon_width);
         let (rect, mut response) = ui.allocate_exact_size(desired_size, Sense::click());
 
@@ -253,19 +261,21 @@ impl<'a> Widget for Checkbox<'a> {
             *checked = !*checked;
             response.mark_changed();
         }
-        response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, *checked, text.text()));
+        response.widget_info(|| {
+            WidgetInfo::selected(
+                WidgetType::Checkbox,
+                *checked,
+                text.as_ref().map_or("", |x| x.text()),
+            )
+        });
 
         if ui.is_rect_visible(rect) {
             // let visuals = ui.style().interact_selectable(&response, *checked); // too colorful
             let visuals = ui.style().interact(&response);
-            let text_pos = pos2(
-                rect.min.x + button_padding.x + icon_width + icon_spacing,
-                rect.center().y - 0.5 * text.size().y,
-            );
             let (small_icon_rect, big_icon_rect) = ui.spacing().icon_rectangles(rect);
             ui.painter().add(epaint::RectShape {
                 rect: big_icon_rect.expand(visuals.expansion),
-                corner_radius: visuals.corner_radius,
+                rounding: visuals.rounding,
                 fill: visuals.bg_fill,
                 stroke: visuals.bg_stroke,
             });
@@ -281,8 +291,13 @@ impl<'a> Widget for Checkbox<'a> {
                     visuals.fg_stroke,
                 ));
             }
-
-            text.paint_with_visuals(ui.painter(), text_pos, visuals);
+            if let Some(text) = text {
+                let text_pos = pos2(
+                    rect.min.x + icon_width + icon_spacing,
+                    rect.center().y - 0.5 * text.size().y,
+                );
+                text.paint_with_visuals(ui.painter(), text_pos, visuals);
+            }
         }
 
         response
@@ -329,27 +344,37 @@ impl Widget for RadioButton {
     fn ui(self, ui: &mut Ui) -> Response {
         let RadioButton { checked, text } = self;
 
-        let icon_width = ui.spacing().icon_width;
-        let icon_spacing = ui.spacing().icon_spacing;
-        let button_padding = ui.spacing().button_padding;
-        let total_extra = button_padding + vec2(icon_width + icon_spacing, 0.0) + button_padding;
+        let spacing = &ui.spacing();
+        let icon_width = spacing.icon_width;
+        let icon_spacing = spacing.icon_spacing;
 
-        let wrap_width = ui.available_width() - total_extra.x;
-        let text = text.into_galley(ui, None, wrap_width, TextStyle::Button);
+        let (text, mut desired_size) = if text.is_empty() {
+            (None, vec2(icon_width, 0.0))
+        } else {
+            let total_extra = vec2(icon_width + icon_spacing, 0.0);
 
-        let mut desired_size = total_extra + text.size();
-        desired_size = desired_size.at_least(ui.spacing().interact_size);
+            let wrap_width = ui.available_width() - total_extra.x;
+            let text = text.into_galley(ui, None, wrap_width, TextStyle::Button);
+
+            let mut desired_size = total_extra + text.size();
+            desired_size = desired_size.at_least(spacing.interact_size);
+
+            (Some(text), desired_size)
+        };
+
+        desired_size = desired_size.at_least(Vec2::splat(spacing.interact_size.y));
         desired_size.y = desired_size.y.max(icon_width);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-        response
-            .widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, checked, text.text()));
+
+        response.widget_info(|| {
+            WidgetInfo::selected(
+                WidgetType::RadioButton,
+                checked,
+                text.as_ref().map_or("", |x| x.text()),
+            )
+        });
 
         if ui.is_rect_visible(rect) {
-            let text_pos = pos2(
-                rect.min.x + button_padding.x + icon_width + icon_spacing,
-                rect.center().y - 0.5 * text.size().y,
-            );
-
             // let visuals = ui.style().interact_selectable(&response, checked); // too colorful
             let visuals = ui.style().interact(&response);
 
@@ -374,7 +399,13 @@ impl Widget for RadioButton {
                 });
             }
 
-            text.paint_with_visuals(ui.painter(), text_pos, visuals);
+            if let Some(text) = text {
+                let text_pos = pos2(
+                    rect.min.x + icon_width + icon_spacing,
+                    rect.center().y - 0.5 * text.size().y,
+                );
+                text.paint_with_visuals(ui.painter(), text_pos, visuals);
+            }
         }
 
         response
@@ -394,7 +425,7 @@ pub struct ImageButton {
 }
 
 impl ImageButton {
-    pub fn new(texture_id: TextureId, size: impl Into<Vec2>) -> Self {
+    pub fn new(texture_id: impl Into<TextureId>, size: impl Into<Vec2>) -> Self {
         Self {
             image: widgets::Image::new(texture_id, size),
             sense: Sense::click(),
@@ -455,9 +486,14 @@ impl Widget for ImageButton {
         response.widget_info(|| WidgetInfo::new(WidgetType::ImageButton));
 
         if ui.is_rect_visible(rect) {
-            let (expansion, corner_radius, fill, stroke) = if selected {
+            let (expansion, rounding, fill, stroke) = if selected {
                 let selection = ui.visuals().selection;
-                (-padding, 0.0, selection.bg_fill, selection.stroke)
+                (
+                    -padding,
+                    Rounding::none(),
+                    selection.bg_fill,
+                    selection.stroke,
+                )
             } else if frame {
                 let visuals = ui.style().interact(&response);
                 let expansion = if response.hovered {
@@ -467,7 +503,7 @@ impl Widget for ImageButton {
                 };
                 (
                     expansion,
-                    visuals.corner_radius,
+                    visuals.rounding,
                     visuals.bg_fill,
                     visuals.bg_stroke,
                 )
@@ -477,7 +513,7 @@ impl Widget for ImageButton {
 
             // Draw frame background (for transparent images):
             ui.painter()
-                .rect_filled(rect.expand2(expansion), corner_radius, fill);
+                .rect_filled(rect.expand2(expansion), rounding, fill);
 
             let image_rect = ui
                 .layout()
@@ -487,7 +523,7 @@ impl Widget for ImageButton {
 
             // Draw frame outline:
             ui.painter()
-                .rect_stroke(rect.expand2(expansion), corner_radius, stroke);
+                .rect_stroke(rect.expand2(expansion), rounding, stroke);
         }
 
         response

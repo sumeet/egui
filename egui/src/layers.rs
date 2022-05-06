@@ -23,6 +23,7 @@ pub enum Order {
     /// Debug layer, always painted last / on top
     Debug,
 }
+
 impl Order {
     const COUNT: usize = 6;
     const ALL: [Order; Self::COUNT] = [
@@ -132,9 +133,9 @@ impl PaintList {
     /// Modify an existing [`Shape`].
     ///
     /// Sometimes you want to paint a frame behind some contents, but don't know how large the frame needs to be
-    /// until the contents have been added, and therefor also painted to the `PaintList`.
+    /// until the contents have been added, and therefor also painted to the [`PaintList`].
     ///
-    /// The solution is to allocate a `Shape` using `let idx = paint_list.add(cr, Shape::Noop);`
+    /// The solution is to allocate a [`Shape`] using `let idx = paint_list.add(cr, Shape::Noop);`
     /// and then later setting it using `paint_list.set(idx, cr, frame);`.
     #[inline(always)]
     pub fn set(&mut self, idx: ShapeIdx, clip_rect: Rect, shape: Shape) {

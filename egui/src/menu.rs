@@ -20,7 +20,8 @@ use super::{
     Sense, TextStyle, Ui, Vec2,
 };
 use crate::{widgets::*, *};
-use epaint::{mutex::Arc, mutex::RwLock, Stroke};
+use epaint::{mutex::RwLock, Stroke};
+use std::sync::Arc;
 
 /// What is saved between frames.
 #[derive(Clone, Default)]
@@ -30,14 +31,11 @@ pub(crate) struct BarState {
 
 impl BarState {
     fn load(ctx: &Context, bar_id: Id) -> Self {
-        ctx.memory()
-            .data
-            .get_temp::<Self>(bar_id)
-            .unwrap_or_default()
+        ctx.data().get_temp::<Self>(bar_id).unwrap_or_default()
     }
 
     fn store(self, ctx: &Context, bar_id: Id) {
-        ctx.memory().data.insert_temp(bar_id, self);
+        ctx.data().insert_temp(bar_id, self);
     }
 
     /// Show a menu at pointer if primary-clicked response.
@@ -64,8 +62,8 @@ impl std::ops::DerefMut for BarState {
 }
 
 /// The menu bar goes well in a [`TopBottomPanel::top`],
-/// but can also be placed in a `Window`.
-/// In the latter case you may want to wrap it in `Frame`.
+/// but can also be placed in a [`Window`].
+/// In the latter case you may want to wrap it in [`Frame`].
 pub fn bar<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
     ui.horizontal(|ui| {
         let mut style = (**ui.style()).clone();
@@ -129,7 +127,7 @@ pub(crate) fn menu_ui<'c, R>(
     let area = Area::new(menu_id)
         .order(Order::Foreground)
         .fixed_pos(pos)
-        .interactable(false)
+        .interactable(true)
         .drag_bounds(Rect::EVERYTHING);
     let inner_response = area.show(ctx, |ui| {
         ui.scope(|ui| {
@@ -216,7 +214,7 @@ impl MenuRootManager {
     ) -> Option<InnerResponse<R>> {
         if let Some(root) = self.inner.as_mut() {
             let (menu_response, inner_response) = root.show(response, add_contents);
-            if let MenuResponse::Close = menu_response {
+            if MenuResponse::Close == menu_response {
                 self.inner = None;
             }
             inner_response
@@ -280,10 +278,10 @@ impl MenuRoot {
         root: &mut MenuRootManager,
         id: Id,
     ) -> MenuResponse {
-        let pointer = &response.ctx.input().pointer;
-        if (response.clicked() && root.is_menu_open(id))
-            || response.ctx.input().key_pressed(Key::Escape)
-        {
+        // Lock the input once for the whole function call (see https://github.com/emilk/egui/pull/1380).
+        let input = response.ctx.input();
+
+        if (response.clicked() && root.is_menu_open(id)) || input.key_pressed(Key::Escape) {
             // menu open and button clicked or esc pressed
             return MenuResponse::Close;
         } else if (response.clicked() && !root.is_menu_open(id))
@@ -293,8 +291,8 @@ impl MenuRoot {
             // or button hovered while other menu is open
             let pos = response.rect.left_bottom();
             return MenuResponse::Create(pos, id);
-        } else if pointer.any_pressed() && pointer.primary_down() {
-            if let Some(pos) = pointer.interact_pos() {
+        } else if input.pointer.any_pressed() && input.pointer.primary_down() {
+            if let Some(pos) = input.pointer.interact_pos() {
                 if let Some(root) = root.inner.as_mut() {
                     if root.id == id {
                         // pressed somewhere while this menu is open
@@ -414,7 +412,8 @@ impl SubMenuButton {
         let button_padding = ui.spacing().button_padding;
         let total_extra = button_padding + button_padding;
         let text_available_width = ui.available_width() - total_extra.x;
-        let text_galley = text.into_galley(ui, Some(true), text_available_width, text_style);
+        let text_galley =
+            text.into_galley(ui, Some(true), text_available_width, text_style.clone());
 
         let icon_available_width = text_available_width - text_galley.size().x;
         let icon_galley = icon.into_galley(ui, Some(true), icon_available_width, text_style);
@@ -440,7 +439,7 @@ impl SubMenuButton {
 
             ui.painter().rect_filled(
                 rect.expand(visuals.expansion),
-                visuals.corner_radius,
+                visuals.rounding,
                 visuals.bg_fill,
             );
 
@@ -482,13 +481,13 @@ impl SubMenu {
     }
 }
 pub(crate) struct MenuState {
-    /// The opened sub-menu and its `Id`
+    /// The opened sub-menu and its [`Id`]
     sub_menu: Option<(Id, Arc<RwLock<MenuState>>)>,
     /// Bounding box of this menu (without the sub-menu)
     pub rect: Rect,
     /// Used to check if any menu in the tree wants to close
     pub response: MenuResponse,
-    /// Used to hash different `Id`s for sub-menus
+    /// Used to hash different [`Id`]s for sub-menus
     entry_count: usize,
 }
 impl MenuState {

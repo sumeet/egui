@@ -11,7 +11,7 @@ use crate::*;
 pub(crate) struct MonoState {
     last_dragged_id: Option<Id>,
     last_dragged_value: Option<f64>,
-    /// For temporary edit of a `DragValue` value.
+    /// For temporary edit of a [`DragValue`] value.
     /// Couples with the current focus id.
     edit_string: Option<String>,
 }
@@ -180,7 +180,7 @@ impl<'a> Widget for DragValue<'a> {
             emath::format_with_decimals_in_range(value, auto_decimals..=max_decimals)
         };
 
-        let kb_edit_id = ui.auto_id_with("edit");
+        let kb_edit_id = ui.next_auto_id();
         let is_kb_editing = ui.memory().has_focus(kb_edit_id);
 
         let mut response = if is_kb_editing {
@@ -195,7 +195,7 @@ impl<'a> Widget for DragValue<'a> {
                 TextEdit::singleline(&mut value_text)
                     .id(kb_edit_id)
                     .desired_width(button_width)
-                    .text_style(TextStyle::Monospace),
+                    .font(TextStyle::Monospace),
             );
             if let Ok(parsed_value) = value_text.parse() {
                 let parsed_value = clamp_to_range(parsed_value, clamp_range);

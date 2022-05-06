@@ -10,9 +10,9 @@ use crate::*;
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-pub(crate) struct State {
+pub struct State {
     /// Positive offset means scrolling down/right
-    offset: Vec2,
+    pub offset: Vec2,
 
     show_scroll: [bool; 2],
 
@@ -43,12 +43,26 @@ impl Default for State {
 
 impl State {
     pub fn load(ctx: &Context, id: Id) -> Option<Self> {
-        ctx.memory().data.get_persisted(id)
+        ctx.data().get_persisted(id)
     }
 
     pub fn store(self, ctx: &Context, id: Id) {
-        ctx.memory().data.insert_persisted(id, self);
+        ctx.data().insert_persisted(id, self);
     }
+}
+
+pub struct ScrollAreaOutput<R> {
+    /// What the user closure returned.
+    pub inner: R,
+
+    /// [`Id`] of the [`ScrollArea`].
+    pub id: Id,
+
+    /// The current state of the scroll area.
+    pub state: State,
+
+    /// Where on the screen the content is (excludes scroll bars).
+    pub inner_rect: Rect,
 }
 
 /// Add vertical and/or horizontal scrolling to a contained [`Ui`].
@@ -60,6 +74,8 @@ impl State {
 /// });
 /// # });
 /// ```
+///
+/// You can scroll to an element using [`Response::scroll_to_me`], [`Ui::scroll_to_cursor`] and [`Ui::scroll_to_rect`].
 #[derive(Clone, Debug)]
 #[must_use = "You should call .show()"]
 pub struct ScrollArea {
@@ -67,6 +83,7 @@ pub struct ScrollArea {
     has_bar: [bool; 2],
     auto_shrink: [bool; 2],
     max_size: Vec2,
+    min_scrolled_size: Vec2,
     always_show_scroll: bool,
     id_source: Option<Id>,
     offset_x: Option<f32>,
@@ -109,6 +126,7 @@ impl ScrollArea {
             has_bar,
             auto_shrink: [true; 2],
             max_size: Vec2::INFINITY,
+            min_scrolled_size: Vec2::splat(64.0),
             always_show_scroll: false,
             id_source: None,
             offset_x: None,
@@ -120,7 +138,7 @@ impl ScrollArea {
 
     /// The maximum width of the outer frame of the scroll area.
     ///
-    /// Use `f32::INFINITY` if you want the scroll area to expand to fit the surrounding `Ui` (default).
+    /// Use `f32::INFINITY` if you want the scroll area to expand to fit the surrounding [`Ui`] (default).
     ///
     /// See also [`Self::auto_shrink`].
     pub fn max_width(mut self, max_width: f32) -> Self {
@@ -130,11 +148,33 @@ impl ScrollArea {
 
     /// The maximum height of the outer frame of the scroll area.
     ///
-    /// Use `f32::INFINITY` if you want the scroll area to expand to fit the surrounding `Ui` (default).
+    /// Use `f32::INFINITY` if you want the scroll area to expand to fit the surrounding [`Ui`] (default).
     ///
     /// See also [`Self::auto_shrink`].
     pub fn max_height(mut self, max_height: f32) -> Self {
         self.max_size.y = max_height;
+        self
+    }
+
+    /// The minimum width of a horizontal scroll area which requires scroll bars.
+    ///
+    /// The [`ScrollArea`] will only become smaller than this if the content is smaller than this
+    /// (and so we don't require scroll bars).
+    ///
+    /// Default: `64.0`.
+    pub fn min_scrolled_width(mut self, min_scrolled_width: f32) -> Self {
+        self.min_scrolled_size.x = min_scrolled_width;
+        self
+    }
+
+    /// The minimum height of a vertical scroll area which requires scroll bars.
+    ///
+    /// The [`ScrollArea`] will only become smaller than this if the content is smaller than this
+    /// (and so we don't require scroll bars).
+    ///
+    /// Default: `64.0`.
+    pub fn min_scrolled_height(mut self, min_scrolled_height: f32) -> Self {
+        self.min_scrolled_size.y = min_scrolled_height;
         self
     }
 
@@ -145,7 +185,7 @@ impl ScrollArea {
         self
     }
 
-    /// A source for the unique `Id`, e.g. `.id_source("second_scroll_area")` or `.id_source(loop_index)`.
+    /// A source for the unique [`Id`], e.g. `.id_source("second_scroll_area")` or `.id_source(loop_index)`.
     pub fn id_source(mut self, id_source: impl std::hash::Hash) -> Self {
         self.id_source = Some(Id::new(id_source));
         self
@@ -203,7 +243,7 @@ impl ScrollArea {
     /// If `false`, the scroll area will not respond to user scrolling
     ///
     /// This can be used, for example, to optionally freeze scrolling while the user
-    /// is inputing text in a `TextEdit` widget contained within the scroll area.
+    /// is inputing text in a [`TextEdit`] widget contained within the scroll area.
     ///
     /// This controls both scrolling directions.
     pub fn enable_scrolling(mut self, enable: bool) -> Self {
@@ -258,6 +298,7 @@ struct Prepared {
     /// width of the vertical bar, and the height of the horizontal bar?
     current_bar_use: Vec2,
     always_show_scroll: bool,
+    /// Where on the screen the content is (excludes scroll bars).
     inner_rect: Rect,
     content_ui: Ui,
     /// Relative coordinates: the offset and size of the view of the inner UI.
@@ -273,6 +314,7 @@ impl ScrollArea {
             has_bar,
             auto_shrink,
             max_size,
+            min_scrolled_size,
             always_show_scroll,
             id_source,
             offset_x,
@@ -285,6 +327,11 @@ impl ScrollArea {
 
         let id_source = id_source.unwrap_or_else(|| Id::new("scroll_area"));
         let id = ui.make_persistent_id(id_source);
+        ui.ctx().check_for_id_clash(
+            id,
+            Rect::from_min_size(ui.available_rect_before_wrap().min, Vec2::ZERO),
+            "ScrollArea",
+        );
         let mut state = State::load(&ctx, id).unwrap_or_default();
 
         state.offset.x = offset_x.unwrap_or(state.offset.x);
@@ -314,27 +361,39 @@ impl ScrollArea {
 
         let outer_size = available_outer.size().at_most(max_size);
 
-        let inner_size = outer_size - current_bar_use;
+        let inner_size = {
+            let mut inner_size = outer_size - current_bar_use;
+
+            // Don't go so far that we shrink to zero.
+            // In particular, if we put a [`ScrollArea`] inside of a [`ScrollArea`], the inner
+            // one shouldn't collapse into nothingness.
+            // See https://github.com/emilk/egui/issues/1097
+            for d in 0..2 {
+                if has_bar[d] {
+                    inner_size[d] = inner_size[d].max(min_scrolled_size[d]);
+                }
+            }
+            inner_size
+        };
+
         let inner_rect = Rect::from_min_size(available_outer.min, inner_size);
 
-        let mut inner_child_max_size = inner_size;
+        let mut content_max_size = inner_size;
 
         if true {
             // Tell the inner Ui to *try* to fit the content without needing to scroll,
-            // i.e. better to wrap text than showing a horizontal scrollbar!
+            // i.e. better to wrap text and shrink images than showing a horizontal scrollbar!
         } else {
             // Tell the inner Ui to use as much space as possible, we can scroll to see it!
             for d in 0..2 {
                 if has_bar[d] {
-                    inner_child_max_size[d] = f32::INFINITY;
+                    content_max_size[d] = f32::INFINITY;
                 }
             }
         }
 
-        let mut content_ui = ui.child_ui(
-            Rect::from_min_size(inner_rect.min - state.offset, inner_child_max_size),
-            *ui.layout(),
-        );
+        let content_max_rect = Rect::from_min_size(inner_rect.min - state.offset, content_max_size);
+        let mut content_ui = ui.child_ui(content_max_rect, *ui.layout());
         let mut content_clip_rect = inner_rect.expand(ui.visuals().clip_rect_margin);
         content_clip_rect = content_clip_rect.intersect(ui.clip_rect());
         // Nice handling of forced resizing beyond the possible:
@@ -362,10 +421,14 @@ impl ScrollArea {
         }
     }
 
-    /// Show the `ScrollArea`, and add the contents to the viewport.
+    /// Show the [`ScrollArea`], and add the contents to the viewport.
     ///
     /// If the inner area can be very long, consider using [`Self::show_rows`] instead.
-    pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    pub fn show<R>(
+        self,
+        ui: &mut Ui,
+        add_contents: impl FnOnce(&mut Ui) -> R,
+    ) -> ScrollAreaOutput<R> {
         self.show_viewport_dyn(ui, Box::new(|ui, _viewport| add_contents(ui)))
     }
 
@@ -374,7 +437,7 @@ impl ScrollArea {
     /// ```
     /// # egui::__run_test_ui(|ui| {
     /// let text_style = egui::TextStyle::Body;
-    /// let row_height = ui.fonts()[text_style].row_height();
+    /// let row_height = ui.text_style_height(&text_style);
     /// // let row_height = ui.spacing().interact_size.y; // if you are adding buttons instead of labels.
     /// let total_rows = 10_000;
     /// egui::ScrollArea::vertical().show_rows(ui, row_height, total_rows, |ui, row_range| {
@@ -391,15 +454,13 @@ impl ScrollArea {
         row_height_sans_spacing: f32,
         total_rows: usize,
         add_contents: impl FnOnce(&mut Ui, std::ops::Range<usize>) -> R,
-    ) -> R {
+    ) -> ScrollAreaOutput<R> {
         let spacing = ui.spacing().item_spacing;
         let row_height_with_spacing = row_height_sans_spacing + spacing.y;
         self.show_viewport(ui, |ui, viewport| {
             ui.set_height((row_height_with_spacing * total_rows as f32 - spacing.y).at_least(0.0));
 
-            let min_row = (viewport.min.y / row_height_with_spacing)
-                .floor()
-                .at_least(0.0) as usize;
+            let min_row = (viewport.min.y / row_height_with_spacing).floor() as usize;
             let max_row = (viewport.max.y / row_height_with_spacing).ceil() as usize + 1;
             let max_row = max_row.at_most(total_rows);
 
@@ -420,7 +481,11 @@ impl ScrollArea {
     ///
     /// `add_contents` is past the viewport, which is the relative view of the content.
     /// So if the passed rect has min = zero, then show the top left content (the user has not scrolled).
-    pub fn show_viewport<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui, Rect) -> R) -> R {
+    pub fn show_viewport<R>(
+        self,
+        ui: &mut Ui,
+        add_contents: impl FnOnce(&mut Ui, Rect) -> R,
+    ) -> ScrollAreaOutput<R> {
         self.show_viewport_dyn(ui, Box::new(add_contents))
     }
 
@@ -428,16 +493,23 @@ impl ScrollArea {
         self,
         ui: &mut Ui,
         add_contents: Box<dyn FnOnce(&mut Ui, Rect) -> R + 'c>,
-    ) -> R {
+    ) -> ScrollAreaOutput<R> {
         let mut prepared = self.begin(ui);
-        let ret = add_contents(&mut prepared.content_ui, prepared.viewport);
-        prepared.end(ui);
-        ret
+        let id = prepared.id;
+        let inner_rect = prepared.inner_rect;
+        let inner = add_contents(&mut prepared.content_ui, prepared.viewport);
+        let state = prepared.end(ui);
+        ScrollAreaOutput {
+            inner,
+            id,
+            state,
+            inner_rect,
+        }
     }
 }
 
 impl Prepared {
-    fn end(self, ui: &mut Ui) {
+    fn end(self, ui: &mut Ui) -> State {
         let Prepared {
             id,
             mut state,
@@ -459,18 +531,38 @@ impl Prepared {
                 // We take the scroll target so only this ScrollArea will use it:
                 let scroll_target = content_ui.ctx().frame_state().scroll_target[d].take();
                 if let Some((scroll, align)) = scroll_target {
-                    let center_factor = align.to_factor();
-
                     let min = content_ui.min_rect().min[d];
-                    let visible_range = min..=min + content_ui.clip_rect().size()[d];
-                    let offset = scroll - lerp(visible_range, center_factor);
-
+                    let clip_rect = content_ui.clip_rect();
+                    let visible_range = min..=min + clip_rect.size()[d];
+                    let start = *scroll.start();
+                    let end = *scroll.end();
+                    let clip_start = clip_rect.min[d];
+                    let clip_end = clip_rect.max[d];
                     let mut spacing = ui.spacing().item_spacing[d];
 
-                    // Depending on the alignment we need to add or subtract the spacing
-                    spacing *= remap(center_factor, 0.0..=1.0, -1.0..=1.0);
+                    let delta = if let Some(align) = align {
+                        let center_factor = align.to_factor();
 
-                    state.offset[d] = offset + spacing;
+                        let offset =
+                            lerp(scroll, center_factor) - lerp(visible_range, center_factor);
+
+                        // Depending on the alignment we need to add or subtract the spacing
+                        spacing *= remap(center_factor, 0.0..=1.0, -1.0..=1.0);
+
+                        offset + spacing - state.offset[d]
+                    } else if start < clip_start && end < clip_end {
+                        -(clip_start - start + spacing).min(clip_end - end - spacing)
+                    } else if end > clip_end && start > clip_start {
+                        (end - clip_end + spacing).min(start - clip_start - spacing)
+                    } else {
+                        // Ui is already in view, no need to adjust scroll.
+                        0.0
+                    };
+
+                    if delta != 0.0 {
+                        state.offset[d] += delta;
+                        ui.ctx().request_repaint();
+                    }
                 }
             }
         }
@@ -710,13 +802,13 @@ impl Prepared {
 
                 ui.painter().add(epaint::Shape::rect_filled(
                     outer_scroll_rect,
-                    visuals.corner_radius,
+                    visuals.rounding,
                     ui.visuals().extreme_bg_color,
                 ));
 
                 ui.painter().add(epaint::Shape::rect_filled(
                     handle_rect,
-                    visuals.corner_radius,
+                    visuals.rounding,
                     visuals.bg_fill,
                 ));
             }
@@ -747,6 +839,8 @@ impl Prepared {
         state.show_scroll = show_scroll_this_frame;
 
         state.store(ui.ctx(), id);
+
+        state
     }
 }
 

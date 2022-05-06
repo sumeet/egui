@@ -19,7 +19,7 @@ pub fn easy_mark_it<'em>(ui: &mut Ui, items: impl Iterator<Item = easy_mark::Ite
 
     ui.allocate_ui_with_layout(initial_size, layout, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        let row_height = (*ui.fonts())[TextStyle::Body].row_height();
+        let row_height = ui.text_style_height(&TextStyle::Body);
         ui.set_row_height(row_height);
 
         for item in items {
@@ -29,7 +29,7 @@ pub fn easy_mark_it<'em>(ui: &mut Ui, items: impl Iterator<Item = easy_mark::Ite
 }
 
 pub fn item_ui(ui: &mut Ui, item: easy_mark::Item<'_>) {
-    let row_height = ui.fonts()[TextStyle::Body].row_height();
+    let row_height = ui.text_style_height(&TextStyle::Body);
     let one_indent = row_height / 2.0;
 
     match item {
@@ -137,7 +137,7 @@ fn rich_text_from_style(text: &str, style: &easy_mark::Style) -> RichText {
 }
 
 fn bullet_point(ui: &mut Ui, width: f32) -> Response {
-    let row_height = ui.fonts()[TextStyle::Body].row_height();
+    let row_height = ui.text_style_height(&TextStyle::Body);
     let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
     ui.painter().circle_filled(
         rect.center(),
@@ -148,7 +148,8 @@ fn bullet_point(ui: &mut Ui, width: f32) -> Response {
 }
 
 fn numbered_point(ui: &mut Ui, width: f32, number: &str) -> Response {
-    let row_height = ui.fonts()[TextStyle::Body].row_height();
+    let font_id = TextStyle::Body.resolve(ui.style());
+    let row_height = ui.fonts().row_height(&font_id);
     let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
     let text = format!("{}.", number);
     let text_color = ui.visuals().strong_text_color();
@@ -156,7 +157,7 @@ fn numbered_point(ui: &mut Ui, width: f32, number: &str) -> Response {
         rect.right_center(),
         Align2::RIGHT_CENTER,
         text,
-        TextStyle::Body,
+        font_id,
         text_color,
     );
     response

@@ -1,9 +1,10 @@
 #![allow(clippy::derive_hash_xor_eq)] // We need to impl Hash for f32, but we don't implement Eq, which is fine
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::{cursor::*, font::UvRect};
-use crate::{mutex::Arc, Color32, Mesh, Stroke, TextStyle};
+use crate::{Color32, FontId, Mesh, Stroke};
 use emath::*;
 
 /// Describes the task of laying out text.
@@ -14,14 +15,14 @@ use emath::*;
 ///
 /// ## Example:
 /// ```
-/// use epaint::{Color32, text::{LayoutJob, TextFormat}, TextStyle};
+/// use epaint::{Color32, text::{LayoutJob, TextFormat}, FontFamily, FontId};
 ///
 /// let mut job = LayoutJob::default();
 /// job.append(
 ///     "Hello ",
 ///     0.0,
 ///     TextFormat {
-///         style: TextStyle::Body,
+///         font_id: FontId::new(14.0, FontFamily::Proportional),
 ///         color: Color32::WHITE,
 ///         ..Default::default()
 ///     },
@@ -30,28 +31,25 @@ use emath::*;
 ///     "World!",
 ///     0.0,
 ///     TextFormat {
-///         style: TextStyle::Monospace,
+///         font_id: FontId::new(14.0, FontFamily::Monospace),
 ///         color: Color32::BLACK,
 ///         ..Default::default()
 ///     },
 /// );
 /// ```
 ///
-/// As you can see, constructing a `LayoutJob` is currently a lot of work.
+/// As you can see, constructing a [`LayoutJob`] is currently a lot of work.
 /// It would be nice to have a helper macro for it!
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct LayoutJob {
-    /// The complete text of this job, referenced by `LayoutSection`.
+    /// The complete text of this job, referenced by [`LayoutSection`].
     pub text: String,
 
     /// The different section, which can have different fonts, colors, etc.
     pub sections: Vec<LayoutSection>,
 
-    /// Try to break text so that no row is wider than this.
-    /// Set to [`f32::INFINITY`] to turn off wrapping.
-    /// Note that `\n` always produces a new line.
-    pub wrap_width: f32,
+    pub wrap: TextWrapping,
 
     /// The first row must be at least this high.
     /// This is in case we lay out text that is the continuation
@@ -68,7 +66,7 @@ pub struct LayoutJob {
     /// How to horizontally align the text (`Align::LEFT`, `Align::Center`, `Align::RIGHT`).
     pub halign: Align,
 
-    /// Justify text so that word-wrapped rows fill the whole [`Self::wrap_width`]
+    /// Justify text so that word-wrapped rows fill the whole [`TextWrapping::max_width`]
     pub justify: bool,
 }
 
@@ -78,7 +76,7 @@ impl Default for LayoutJob {
         Self {
             text: Default::default(),
             sections: Default::default(),
-            wrap_width: f32::INFINITY,
+            wrap: Default::default(),
             first_row_min_height: 0.0,
             break_on_newline: true,
             halign: Align::LEFT,
@@ -90,15 +88,18 @@ impl Default for LayoutJob {
 impl LayoutJob {
     /// Break on `\n` and at the given wrap width.
     #[inline]
-    pub fn simple(text: String, text_style: TextStyle, color: Color32, wrap_width: f32) -> Self {
+    pub fn simple(text: String, font_id: FontId, color: Color32, wrap_width: f32) -> Self {
         Self {
             sections: vec![LayoutSection {
                 leading_space: 0.0,
                 byte_range: 0..text.len(),
-                format: TextFormat::simple(text_style, color),
+                format: TextFormat::simple(font_id, color),
             }],
             text,
-            wrap_width,
+            wrap: TextWrapping {
+                max_width: wrap_width,
+                ..Default::default()
+            },
             break_on_newline: true,
             ..Default::default()
         }
@@ -106,15 +107,15 @@ impl LayoutJob {
 
     /// Does not break on `\n`, but shows the replacement character instead.
     #[inline]
-    pub fn simple_singleline(text: String, text_style: TextStyle, color: Color32) -> Self {
+    pub fn simple_singleline(text: String, font_id: FontId, color: Color32) -> Self {
         Self {
             sections: vec![LayoutSection {
                 leading_space: 0.0,
                 byte_range: 0..text.len(),
-                format: TextFormat::simple(text_style, color),
+                format: TextFormat::simple(font_id, color),
             }],
             text,
-            wrap_width: f32::INFINITY,
+            wrap: Default::default(),
             break_on_newline: false,
             ..Default::default()
         }
@@ -129,7 +130,7 @@ impl LayoutJob {
                 format,
             }],
             text,
-            wrap_width: f32::INFINITY,
+            wrap: Default::default(),
             break_on_newline: true,
             ..Default::default()
         }
@@ -140,7 +141,7 @@ impl LayoutJob {
         self.sections.is_empty()
     }
 
-    /// Helper for adding a new section when building a `LayoutJob`.
+    /// Helper for adding a new section when building a [`LayoutJob`].
     pub fn append(&mut self, text: &str, leading_space: f32, format: TextFormat) {
         let start = self.text.len();
         self.text += text;
@@ -156,7 +157,7 @@ impl LayoutJob {
     pub fn font_height(&self, fonts: &crate::Fonts) -> f32 {
         let mut max_height = 0.0_f32;
         for section in &self.sections {
-            max_height = max_height.max(fonts.row_height(section.format.style));
+            max_height = max_height.max(fonts.row_height(&section.format.font_id));
         }
         max_height
     }
@@ -168,7 +169,7 @@ impl std::hash::Hash for LayoutJob {
         let Self {
             text,
             sections,
-            wrap_width,
+            wrap,
             first_row_min_height,
             break_on_newline,
             halign,
@@ -177,7 +178,7 @@ impl std::hash::Hash for LayoutJob {
 
         text.hash(state);
         sections.hash(state);
-        crate::f32_hash(state, *wrap_width);
+        wrap.hash(state);
         crate::f32_hash(state, *first_row_min_height);
         break_on_newline.hash(state);
         halign.hash(state);
@@ -213,10 +214,10 @@ impl std::hash::Hash for LayoutSection {
 
 // ----------------------------------------------------------------------------
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct TextFormat {
-    pub style: TextStyle,
+    pub font_id: FontId,
     /// Text color
     pub color: Color32,
     pub background: Color32,
@@ -233,7 +234,7 @@ impl Default for TextFormat {
     #[inline]
     fn default() -> Self {
         Self {
-            style: TextStyle::Body,
+            font_id: FontId::default(),
             color: Color32::GRAY,
             background: Color32::TRANSPARENT,
             italics: false,
@@ -246,11 +247,59 @@ impl Default for TextFormat {
 
 impl TextFormat {
     #[inline]
-    pub fn simple(style: TextStyle, color: Color32) -> Self {
+    pub fn simple(font_id: FontId, color: Color32) -> Self {
         Self {
-            style,
+            font_id,
             color,
             ..Default::default()
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct TextWrapping {
+    /// Try to break text so that no row is wider than this.
+    /// Set to [`f32::INFINITY`] to turn off wrapping.
+    /// Note that `\n` always produces a new line.
+    pub max_width: f32,
+
+    /// Maximum amount of rows the text should have.
+    /// Set to `0` to disable this.
+    pub max_rows: usize,
+
+    /// Don't try to break text at an appropriate place.
+    pub break_anywhere: bool,
+
+    /// Character to use to represent clipped text, `…` for example, which is the default.
+    pub overflow_character: Option<char>,
+}
+
+impl std::hash::Hash for TextWrapping {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let Self {
+            max_width,
+            max_rows,
+            break_anywhere,
+            overflow_character,
+        } = self;
+        crate::f32_hash(state, *max_width);
+        max_rows.hash(state);
+        break_anywhere.hash(state);
+        overflow_character.hash(state);
+    }
+}
+
+impl Default for TextWrapping {
+    fn default() -> Self {
+        Self {
+            max_width: f32::INFINITY,
+            max_rows: 0,
+            break_anywhere: false,
+            overflow_character: Some('…'),
         }
     }
 }
@@ -261,6 +310,7 @@ impl TextFormat {
 ///
 /// You can create a [`Galley`] using [`crate::Fonts::layout_job`];
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Galley {
     /// The job that this galley is the result of.
     /// Contains the original string and style sections.
@@ -294,6 +344,7 @@ pub struct Galley {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Row {
     /// One for each `char`.
     pub glyphs: Vec<Glyph>,
@@ -306,16 +357,17 @@ pub struct Row {
     /// The mesh, ready to be rendered.
     pub visuals: RowVisuals,
 
-    /// If true, this `Row` came from a paragraph ending with a `\n`.
+    /// If true, this [`Row`] came from a paragraph ending with a `\n`.
     /// The `\n` itself is omitted from [`Self::glyphs`].
-    /// A `\n` in the input text always creates a new `Row` below it,
-    /// so that text that ends with `\n` has an empty `Row` last.
-    /// This also implies that the last `Row` in a `Galley` always has `ends_with_newline == false`.
+    /// A `\n` in the input text always creates a new [`Row`] below it,
+    /// so that text that ends with `\n` has an empty [`Row`] last.
+    /// This also implies that the last [`Row`] in a [`Galley`] always has `ends_with_newline == false`.
     pub ends_with_newline: bool,
 }
 
 /// The tessellated output of a row.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct RowVisuals {
     /// The tessellated text, using non-normalized (texel) UV coordinates.
     /// That is, you need to divide the uv coordinates by the texture size.
@@ -341,6 +393,7 @@ impl Default for RowVisuals {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Glyph {
     pub chr: char,
     /// Relative to the galley position.
@@ -369,13 +422,13 @@ impl Glyph {
 // ----------------------------------------------------------------------------
 
 impl Row {
-    /// Excludes the implicit `\n` after the `Row`, if any.
+    /// Excludes the implicit `\n` after the [`Row`], if any.
     #[inline]
     pub fn char_count_excluding_newline(&self) -> usize {
         self.glyphs.len()
     }
 
-    /// Includes the implicit `\n` after the `Row`, if any.
+    /// Includes the implicit `\n` after the [`Row`], if any.
     #[inline]
     pub fn char_count_including_newline(&self) -> usize {
         self.glyphs.len() + (self.ends_with_newline as usize)

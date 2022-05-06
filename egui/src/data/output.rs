@@ -2,11 +2,56 @@
 
 use crate::WidgetType;
 
-/// What egui emits each frame.
+/// What egui emits each frame from [`crate::Context::run`].
+///
+/// The backend should use this.
+#[derive(Clone, Default, PartialEq)]
+pub struct FullOutput {
+    /// Non-rendering related output.
+    pub platform_output: PlatformOutput,
+
+    /// If `true`, egui is requesting immediate repaint (i.e. on the next frame).
+    ///
+    /// This happens for instance when there is an animation, or if a user has called `Context::request_repaint()`.
+    pub needs_repaint: bool,
+
+    /// Texture changes since last frame (including the font texture).
+    ///
+    /// The backend needs to apply [`crate::TexturesDelta::set`] _before_ painting,
+    /// and free any texture in [`crate::TexturesDelta::free`] _after_ painting.
+    pub textures_delta: epaint::textures::TexturesDelta,
+
+    /// What to paint.
+    ///
+    /// You can use [`crate::Context::tessellate`] to turn this into triangles.
+    pub shapes: Vec<epaint::ClippedShape>,
+}
+
+impl FullOutput {
+    /// Add on new output.
+    pub fn append(&mut self, newer: Self) {
+        let Self {
+            platform_output,
+            needs_repaint,
+            textures_delta,
+            shapes,
+        } = newer;
+
+        self.platform_output.append(platform_output);
+        self.needs_repaint = needs_repaint; // if the last frame doesn't need a repaint, then we don't need to repaint
+        self.textures_delta.append(textures_delta);
+        self.shapes = shapes; // Only paint the latest
+    }
+}
+
+/// The non-rendering part of what egui emits each frame.
+///
+/// You can access (and modify) this with [`crate::Context::output`].
+///
 /// The backend should use this.
 #[derive(Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct Output {
+pub struct PlatformOutput {
     /// Set the cursor to this icon.
     pub cursor_icon: CursorIcon,
 
@@ -18,26 +63,18 @@ pub struct Output {
     /// This is often a response to [`crate::Event::Copy`] or [`crate::Event::Cut`].
     pub copied_text: String,
 
-    /// If `true`, egui is requesting immediate repaint (i.e. on the next frame).
-    ///
-    /// This happens for instance when there is an animation, or if a user has called `Context::request_repaint()`.
-    ///
-    /// As an egui user: don't set this value directly.
-    /// Call `Context::request_repaint()` instead and it will do so for you.
-    pub needs_repaint: bool,
-
     /// Events that may be useful to e.g. a screen reader.
     pub events: Vec<OutputEvent>,
 
-    /// Is there a mutable `TextEdit` under the cursor?
-    /// Use by `egui_web` to show/hide mobile keyboard and IME agent.
+    /// Is there a mutable [`TextEdit`](crate::TextEdit) under the cursor?
+    /// Use by `eframe` web to show/hide mobile keyboard and IME agent.
     pub mutable_text_under_cursor: bool,
 
     /// Screen-space position of text edit cursor (used for IME).
     pub text_cursor_pos: Option<crate::Pos2>,
 }
 
-impl Output {
+impl PlatformOutput {
     /// Open the given url in a web browser.
     /// If egui is running in a browser, the same tab will be reused.
     pub fn open_url(&mut self, url: impl ToString) {
@@ -51,6 +88,7 @@ impl Output {
             match event {
                 OutputEvent::Clicked(widget_info)
                 | OutputEvent::DoubleClicked(widget_info)
+                | OutputEvent::TripleClicked(widget_info)
                 | OutputEvent::FocusGained(widget_info)
                 | OutputEvent::TextSelectionChanged(widget_info)
                 | OutputEvent::ValueChanged(widget_info) => {
@@ -67,7 +105,6 @@ impl Output {
             cursor_icon,
             open_url,
             copied_text,
-            needs_repaint,
             mut events,
             mutable_text_under_cursor,
             text_cursor_pos,
@@ -80,7 +117,6 @@ impl Output {
         if !copied_text.is_empty() {
             self.copied_text = copied_text;
         }
-        self.needs_repaint = needs_repaint; // if the last frame doesn't need a repaint, then we don't need to repaint
         self.events.append(&mut events);
         self.mutable_text_under_cursor = mutable_text_under_cursor;
         self.text_cursor_pos = text_cursor_pos.or(self.text_cursor_pos);
@@ -124,7 +160,7 @@ impl OpenUrl {
 
 /// A mouse cursor icon.
 ///
-/// egui emits a [`CursorIcon`] in [`Output`] each frame as a request to the integration.
+/// egui emits a [`CursorIcon`] in [`PlatformOutput`] each frame as a request to the integration.
 ///
 /// Loosely based on <https://developer.mozilla.org/en-US/docs/Web/CSS/cursor>.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,10 +227,11 @@ pub enum CursorIcon {
     Grabbing,
 
     // ------------------------------------
-    // Resizing and scrolling
     /// Something can be scrolled in any direction (panned).
     AllScroll,
 
+    // ------------------------------------
+    // Resizing in two directions:
     /// Horizontal resize `-` to make something wider or more narrow (left to/from right)
     ResizeHorizontal,
     /// Diagonal resize `/` (right-up to/from left-down)
@@ -204,6 +241,33 @@ pub enum CursorIcon {
     /// Vertical resize `|` (up-down or down-up)
     ResizeVertical,
 
+    // ------------------------------------
+    // Resizing in one direction:
+    /// Resize something rightwards (e.g. when dragging the right-most edge of something)
+    ResizeEast,
+    /// Resize something down and right (e.g. when dragging the bottom-right corner of something)
+    ResizeSouthEast,
+    /// Resize something downwards (e.g. when dragging the bottom edge of something)
+    ResizeSouth,
+    /// Resize something down and left (e.g. when dragging the bottom-left corner of something)
+    ResizeSouthWest,
+    /// Resize something leftwards (e.g. when dragging the left edge of something)
+    ResizeWest,
+    /// Resize something up and left (e.g. when dragging the top-left corner of something)
+    ResizeNorthWest,
+    /// Resize something up (e.g. when dragging the top edge of something)
+    ResizeNorth,
+    /// Resize something up and right (e.g. when dragging the top-right corner of something)
+    ResizeNorthEast,
+
+    // ------------------------------------
+    /// Resize a column
+    ResizeColumn,
+    /// Resize a row
+    ResizeRow,
+
+    // ------------------------------------
+    // Zooming:
     /// Enhance!
     ZoomIn,
     /// Let's get a better overview
@@ -211,7 +275,7 @@ pub enum CursorIcon {
 }
 
 impl CursorIcon {
-    pub const ALL: [CursorIcon; 25] = [
+    pub const ALL: [CursorIcon; 35] = [
         CursorIcon::Default,
         CursorIcon::None,
         CursorIcon::ContextMenu,
@@ -235,6 +299,16 @@ impl CursorIcon {
         CursorIcon::ResizeNeSw,
         CursorIcon::ResizeNwSe,
         CursorIcon::ResizeVertical,
+        CursorIcon::ResizeEast,
+        CursorIcon::ResizeSouthEast,
+        CursorIcon::ResizeSouth,
+        CursorIcon::ResizeSouthWest,
+        CursorIcon::ResizeWest,
+        CursorIcon::ResizeNorthWest,
+        CursorIcon::ResizeNorth,
+        CursorIcon::ResizeNorthEast,
+        CursorIcon::ResizeColumn,
+        CursorIcon::ResizeRow,
         CursorIcon::ZoomIn,
         CursorIcon::ZoomOut,
     ];
@@ -256,6 +330,8 @@ pub enum OutputEvent {
     Clicked(WidgetInfo),
     // A widget was double-clicked.
     DoubleClicked(WidgetInfo),
+    // A widget was triple-clicked.
+    TripleClicked(WidgetInfo),
     /// A widget gained keyboard focus (by tab key).
     FocusGained(WidgetInfo),
     // Text selection was updated.
@@ -269,6 +345,7 @@ impl std::fmt::Debug for OutputEvent {
         match self {
             Self::Clicked(wi) => write!(f, "Clicked({:?})", wi),
             Self::DoubleClicked(wi) => write!(f, "DoubleClicked({:?})", wi),
+            Self::TripleClicked(wi) => write!(f, "TripleClicked({:?})", wi),
             Self::FocusGained(wi) => write!(f, "FocusGained({:?})", wi),
             Self::TextSelectionChanged(wi) => write!(f, "TextSelectionChanged({:?})", wi),
             Self::ValueChanged(wi) => write!(f, "ValueChanged({:?})", wi),
@@ -286,7 +363,7 @@ pub struct WidgetInfo {
     pub enabled: bool,
     /// The text on labels, buttons, checkboxes etc.
     pub label: Option<String>,
-    /// The contents of some editable text (for `TextEdit` fields).
+    /// The contents of some editable text (for [`TextEdit`](crate::TextEdit) fields).
     pub current_text_value: Option<String>,
     // The previous text value.
     pub prev_text_value: Option<String>,
@@ -431,7 +508,7 @@ impl WidgetInfo {
 
         // TODO: localization
         let widget_type = match typ {
-            WidgetType::Hyperlink => "link",
+            WidgetType::Link => "link",
             WidgetType::TextEdit => "text edit",
             WidgetType::Button => "button",
             WidgetType::Checkbox => "checkbox",

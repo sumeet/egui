@@ -1,12 +1,15 @@
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
 use crate::{
-    emath::{Align2, Pos2, Rect, Vec2},
+    emath::{pos2, Align2, Pos2, Rect, Vec2},
     layers::{LayerId, PaintList, ShapeIdx},
-    Color32, Context,
+    Color32, Context, FontId,
 };
 use epaint::{
-    mutex::{Arc, RwLockReadGuard, RwLockWriteGuard},
-    text::{Fonts, Galley, TextStyle},
-    CircleShape, RectShape, Shape, Stroke, TextShape,
+    mutex::{RwLockReadGuard, RwLockWriteGuard},
+    text::{Fonts, Galley},
+    CircleShape, RectShape, Rounding, Shape, Stroke,
 };
 
 /// Helper to paint shapes and text to a specific region on a specific layer.
@@ -20,7 +23,7 @@ pub struct Painter {
     /// Where we paint
     layer_id: LayerId,
 
-    /// Everything painted in this `Painter` will be clipped against this.
+    /// Everything painted in this [`Painter`] will be clipped against this.
     /// This means nothing outside of this rectangle will be visible on screen.
     clip_rect: Rect,
 
@@ -30,6 +33,7 @@ pub struct Painter {
 }
 
 impl Painter {
+    /// Create a painter to a specific layer within a certain clip rectangle.
     pub fn new(ctx: Context, layer_id: LayerId, clip_rect: Rect) -> Self {
         Self {
             ctx,
@@ -39,6 +43,7 @@ impl Painter {
         }
     }
 
+    /// Redirect where you are painting.
     #[must_use]
     pub fn with_layer_id(self, layer_id: LayerId) -> Self {
         Self {
@@ -49,7 +54,20 @@ impl Painter {
         }
     }
 
-    /// redirect
+    /// Create a painter for a sub-region of this [`Painter`].
+    ///
+    /// The clip-rect of the returned [`Painter`] will be the intersection
+    /// of the given rectangle and the `clip_rect()` of the parent [`Painter`].
+    pub fn with_clip_rect(&self, rect: Rect) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            layer_id: self.layer_id,
+            clip_rect: rect.intersect(self.clip_rect),
+            fade_to_color: self.fade_to_color,
+        }
+    }
+
+    /// Redirect where you are painting.
     pub fn set_layer_id(&mut self, layer_id: LayerId) {
         self.layer_id = layer_id;
     }
@@ -68,10 +86,7 @@ impl Painter {
         self.fade_to_color = Some(Color32::TRANSPARENT);
     }
 
-    /// Create a painter for a sub-region of this `Painter`.
-    ///
-    /// The clip-rect of the returned `Painter` will be the intersection
-    /// of the given rectangle and the `clip_rect()` of this `Painter`.
+    #[deprecated = "Use Painter::with_clip_rect"] // Deprecated in 2022-04-18, before egui 0.18
     pub fn sub_region(&self, rect: Rect) -> Self {
         Self {
             ctx: self.ctx.clone(),
@@ -102,14 +117,14 @@ impl Painter {
         self.layer_id
     }
 
-    /// Everything painted in this `Painter` will be clipped against this.
+    /// Everything painted in this [`Painter`] will be clipped against this.
     /// This means nothing outside of this rectangle will be visible on screen.
     #[inline(always)]
     pub fn clip_rect(&self) -> Rect {
         self.clip_rect
     }
 
-    /// Everything painted in this `Painter` will be clipped against this.
+    /// Everything painted in this [`Painter`] will be clipped against this.
     /// This means nothing outside of this rectangle will be visible on screen.
     #[inline(always)]
     pub fn set_clip_rect(&mut self, clip_rect: Rect) {
@@ -192,14 +207,13 @@ impl Painter {
 /// ## Debug painting
 impl Painter {
     #[allow(clippy::needless_pass_by_value)]
-    pub fn debug_rect(&mut self, rect: Rect, color: Color32, text: impl ToString) {
+    pub fn debug_rect(&self, rect: Rect, color: Color32, text: impl ToString) {
         self.rect_stroke(rect, 0.0, (1.0, color));
-        let text_style = TextStyle::Monospace;
         self.text(
             rect.min,
             Align2::LEFT_TOP,
             text.to_string(),
-            text_style,
+            FontId::monospace(14.0),
             color,
         );
     }
@@ -217,7 +231,7 @@ impl Painter {
         color: Color32,
         text: impl ToString,
     ) -> Rect {
-        let galley = self.layout_no_wrap(text.to_string(), TextStyle::Monospace, color);
+        let galley = self.layout_no_wrap(text.to_string(), FontId::monospace(14.0), color);
         let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
         let frame_rect = rect.expand(2.0);
         self.add(Shape::rect_filled(
@@ -232,9 +246,26 @@ impl Painter {
 
 /// # Paint different primitives
 impl Painter {
+    /// Paints a line from the first point to the second.
     pub fn line_segment(&self, points: [Pos2; 2], stroke: impl Into<Stroke>) {
         self.add(Shape::LineSegment {
             points,
+            stroke: stroke.into(),
+        });
+    }
+
+    /// Paints a horizontal line.
+    pub fn hline(&self, x: RangeInclusive<f32>, y: f32, stroke: impl Into<Stroke>) {
+        self.add(Shape::LineSegment {
+            points: [pos2(*x.start(), y), pos2(*x.end(), y)],
+            stroke: stroke.into(),
+        });
+    }
+
+    /// Paints a vertical line.
+    pub fn vline(&self, x: f32, y: RangeInclusive<f32>, stroke: impl Into<Stroke>) {
+        self.add(Shape::LineSegment {
+            points: [pos2(x, *y.start()), pos2(x, *y.end())],
             stroke: stroke.into(),
         });
     }
@@ -275,31 +306,41 @@ impl Painter {
     pub fn rect(
         &self,
         rect: Rect,
-        corner_radius: f32,
+        rounding: impl Into<Rounding>,
         fill_color: impl Into<Color32>,
         stroke: impl Into<Stroke>,
     ) {
         self.add(RectShape {
             rect,
-            corner_radius,
+            rounding: rounding.into(),
             fill: fill_color.into(),
             stroke: stroke.into(),
         });
     }
 
-    pub fn rect_filled(&self, rect: Rect, corner_radius: f32, fill_color: impl Into<Color32>) {
+    pub fn rect_filled(
+        &self,
+        rect: Rect,
+        rounding: impl Into<Rounding>,
+        fill_color: impl Into<Color32>,
+    ) {
         self.add(RectShape {
             rect,
-            corner_radius,
+            rounding: rounding.into(),
             fill: fill_color.into(),
             stroke: Default::default(),
         });
     }
 
-    pub fn rect_stroke(&self, rect: Rect, corner_radius: f32, stroke: impl Into<Stroke>) {
+    pub fn rect_stroke(
+        &self,
+        rect: Rect,
+        rounding: impl Into<Rounding>,
+        stroke: impl Into<Stroke>,
+    ) {
         self.add(RectShape {
             rect,
-            corner_radius,
+            rounding: rounding.into(),
             fill: Default::default(),
             stroke: stroke.into(),
         });
@@ -322,7 +363,7 @@ impl Painter {
 impl Painter {
     /// Lay out and paint some text.
     ///
-    /// To center the text at the given position, use `anchor: (Center, Center)`.
+    /// To center the text at the given position, use `Align2::CENTER_CENTER`.
     ///
     /// To find out the size of text before painting it, use
     /// [`Self::layout`] or [`Self::layout_no_wrap`].
@@ -334,10 +375,10 @@ impl Painter {
         pos: Pos2,
         anchor: Align2,
         text: impl ToString,
-        text_style: TextStyle,
+        font_id: FontId,
         text_color: Color32,
     ) -> Rect {
-        let galley = self.layout_no_wrap(text.to_string(), text_style, text_color);
+        let galley = self.layout_no_wrap(text.to_string(), font_id, text_color);
         let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
         self.galley(rect.min, galley);
         rect
@@ -350,11 +391,11 @@ impl Painter {
     pub fn layout(
         &self,
         text: String,
-        text_style: TextStyle,
+        font_id: FontId,
         color: crate::Color32,
         wrap_width: f32,
     ) -> Arc<Galley> {
-        self.fonts().layout(text, text_style, color, wrap_width)
+        self.fonts().layout(text, font_id, color, wrap_width)
     }
 
     /// Will line break at `\n`.
@@ -364,15 +405,15 @@ impl Painter {
     pub fn layout_no_wrap(
         &self,
         text: String,
-        text_style: TextStyle,
+        font_id: FontId,
         color: crate::Color32,
     ) -> Arc<Galley> {
-        self.fonts().layout(text, text_style, color, f32::INFINITY)
+        self.fonts().layout(text, font_id, color, f32::INFINITY)
     }
 
     /// Paint text that has already been layed out in a [`Galley`].
     ///
-    /// You can create the `Galley` with [`Self::layout`].
+    /// You can create the [`Galley`] with [`Self::layout`].
     ///
     /// If you want to change the color of the text, use [`Self::galley_with_color`].
     #[inline(always)]
@@ -384,16 +425,13 @@ impl Painter {
 
     /// Paint text that has already been layed out in a [`Galley`].
     ///
-    /// You can create the `Galley` with [`Self::layout`].
+    /// You can create the [`Galley`] with [`Self::layout`].
     ///
     /// The text color in the [`Galley`] will be replaced with the given color.
     #[inline(always)]
     pub fn galley_with_color(&self, pos: Pos2, galley: Arc<Galley>, text_color: Color32) {
         if !galley.is_empty() {
-            self.add(TextShape {
-                override_text_color: Some(text_color),
-                ..TextShape::new(pos, galley)
-            });
+            self.add(Shape::galley_with_color(pos, galley, text_color));
         }
     }
 }

@@ -2,6 +2,8 @@ use crate::{widget_text::WidgetTextGalley, *};
 
 /// Static text.
 ///
+/// Usually it is more convenient to use [`Ui::label`].
+///
 /// ```
 /// # egui::__run_test_ui(|ui| {
 /// ui.label("Equivalent");
@@ -30,7 +32,7 @@ impl Label {
         self.text.text()
     }
 
-    /// If `true`, the text will wrap to stay within the max width of the `Ui`.
+    /// If `true`, the text will wrap to stay within the max width of the [`Ui`].
     ///
     /// By default [`Self::wrap`] will be true in vertical layouts
     /// and horizontal layouts with wrapping,
@@ -49,7 +51,7 @@ impl Label {
     /// By calling this you can turn the label into a button of sorts.
     /// This will also give the label the hover-effect of a button, but without the frame.
     ///
-    /// ``` rust
+    /// ```
     /// # use egui::{Label, Sense};
     /// # egui::__run_test_ui(|ui| {
     /// if ui.add(Label::new("click me").sense(Sense::click())).clicked() {
@@ -82,7 +84,9 @@ impl Label {
         }
 
         let valign = ui.layout().vertical_align();
-        let mut text_job = self.text.into_text_job(ui.style(), TextStyle::Body, valign);
+        let mut text_job = self
+            .text
+            .into_text_job(ui.style(), FontSelection::Default, valign);
 
         let should_wrap = self.wrap.unwrap_or_else(|| ui.wrap_text());
         let available_width = ui.available_width();
@@ -99,7 +103,7 @@ impl Label {
             let first_row_indentation = available_width - ui.available_size_before_wrap().x;
             egui_assert!(first_row_indentation.is_finite());
 
-            text_job.job.wrap_width = available_width;
+            text_job.job.wrap.max_width = available_width;
             text_job.job.first_row_min_height = cursor.height();
             text_job.job.halign = Align::Min;
             text_job.job.justify = false;
@@ -125,9 +129,9 @@ impl Label {
             (pos, text_galley, response)
         } else {
             if should_wrap {
-                text_job.job.wrap_width = available_width;
+                text_job.job.wrap.max_width = available_width;
             } else {
-                text_job.job.wrap_width = f32::INFINITY;
+                text_job.job.wrap.max_width = f32::INFINITY;
             };
 
             if ui.is_grid() {

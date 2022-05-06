@@ -1,5 +1,5 @@
 use crate::{
-    emath::{lerp, Align, Pos2, Rect, Vec2},
+    emath::{Align, Pos2, Rect, Vec2},
     menu, Context, CursorIcon, Id, LayerId, PointerButton, Sense, Ui, WidgetText,
     NUM_POINTER_BUTTONS,
 };
@@ -8,11 +8,11 @@ use crate::{
 
 /// The result of adding a widget to a [`Ui`].
 ///
-/// A `Response` lets you know whether or not a widget is being hovered, clicked or dragged.
+/// A [`Response`] lets you know whether or not a widget is being hovered, clicked or dragged.
 /// It also lets you easily show a tooltip on hover.
 ///
-/// Whenever something gets added to a `Ui`, a `Response` object is returned.
-/// [`ui.add`] returns a `Response`, as does [`ui.button`], and all similar shortcuts.
+/// Whenever something gets added to a [`Ui`], a [`Response`] object is returned.
+/// [`ui.add`] returns a [`Response`], as does [`ui.button`], and all similar shortcuts.
 #[derive(Clone)]
 pub struct Response {
     // CONTEXT:
@@ -23,7 +23,7 @@ pub struct Response {
     /// Which layer the widget is part of.
     pub layer_id: LayerId,
 
-    /// The `Id` of the widget/area this response pertains.
+    /// The [`Id`] of the widget/area this response pertains.
     pub id: Id,
 
     /// The area of the screen we are talking about.
@@ -34,37 +34,50 @@ pub struct Response {
 
     /// Was the widget enabled?
     /// If `false`, there was no interaction attempted (not even hover).
-    pub(crate) enabled: bool,
+    #[doc(hidden)]
+    pub enabled: bool,
 
     // OUT:
     /// The pointer is hovering above this widget or the widget was clicked/tapped this frame.
-    pub(crate) hovered: bool,
+    #[doc(hidden)]
+    pub hovered: bool,
 
     /// The pointer clicked this thing this frame.
-    pub(crate) clicked: [bool; NUM_POINTER_BUTTONS],
+    #[doc(hidden)]
+    pub clicked: [bool; NUM_POINTER_BUTTONS],
 
     // TODO: `released` for sliders
     /// The thing was double-clicked.
-    pub(crate) double_clicked: [bool; NUM_POINTER_BUTTONS],
+    #[doc(hidden)]
+    pub double_clicked: [bool; NUM_POINTER_BUTTONS],
+
+    /// The thing was triple-clicked.
+    pub(crate) triple_clicked: [bool; NUM_POINTER_BUTTONS],
 
     /// The widgets is being dragged
-    pub(crate) dragged: bool,
+    #[doc(hidden)]
+    pub dragged: bool,
 
     /// The widget was being dragged, but now it has been released.
-    pub(crate) drag_released: bool,
+    #[doc(hidden)]
+    pub drag_released: bool,
 
     /// Is the pointer button currently down on this widget?
     /// This is true if the pointer is pressing down or dragging a widget
-    pub(crate) is_pointer_button_down_on: bool,
+    #[doc(hidden)]
+    pub is_pointer_button_down_on: bool,
 
     /// Where the pointer (mouse/touch) were when when this widget was clicked or dragged.
     /// `None` if the widget is not being interacted with.
-    pub(crate) interact_pointer_pos: Option<Pos2>,
+    #[doc(hidden)]
+    pub interact_pointer_pos: Option<Pos2>,
 
     /// What the underlying data changed?
-    /// e.g. the slider was dragged, text was entered in a `TextEdit` etc.
-    /// Always `false` for something like a `Button`.
-    pub(crate) changed: bool,
+    ///
+    /// e.g. the slider was dragged, text was entered in a [`TextEdit`](crate::TextEdit) etc.
+    /// Always `false` for something like a [`Button`](crate::Button).
+    #[doc(hidden)]
+    pub changed: bool,
 }
 
 impl std::fmt::Debug for Response {
@@ -79,6 +92,7 @@ impl std::fmt::Debug for Response {
             hovered,
             clicked,
             double_clicked,
+            triple_clicked,
             dragged,
             drag_released,
             is_pointer_button_down_on,
@@ -94,6 +108,7 @@ impl std::fmt::Debug for Response {
             .field("hovered", hovered)
             .field("clicked", clicked)
             .field("double_clicked", double_clicked)
+            .field("triple_clicked", triple_clicked)
             .field("dragged", dragged)
             .field("drag_released", drag_released)
             .field("is_pointer_button_down_on", is_pointer_button_down_on)
@@ -138,9 +153,19 @@ impl Response {
         self.double_clicked[PointerButton::Primary as usize]
     }
 
+    /// Returns true if this widget was triple-clicked this frame by the primary button.
+    pub fn triple_clicked(&self) -> bool {
+        self.triple_clicked[PointerButton::Primary as usize]
+    }
+
     /// Returns true if this widget was double-clicked this frame by the given button.
     pub fn double_clicked_by(&self, button: PointerButton) -> bool {
         self.double_clicked[button as usize]
+    }
+
+    /// Returns true if this widget was triple-clicked this frame by the given button.
+    pub fn triple_clicked_by(&self, button: PointerButton) -> bool {
+        self.triple_clicked[button as usize]
     }
 
     /// `true` if there was a click *outside* this widget this frame.
@@ -286,14 +311,14 @@ impl Response {
 
     /// What the underlying data changed?
     ///
-    /// e.g. the slider was dragged, text was entered in a `TextEdit` etc.
-    /// Always `false` for something like a `Button`.
+    /// e.g. the slider was dragged, text was entered in a [`TextEdit`](crate::TextEdit) etc.
+    /// Always `false` for something like a [`Button`](crate::Button).
     ///
     /// Can sometimes be `true` even though the data didn't changed
     /// (e.g. if the user entered a character and erased it the same frame).
     ///
     /// This is not set if the *view* of the data was changed.
-    /// For instance, moving the cursor in a `TextEdit` does not set this to `true`.
+    /// For instance, moving the cursor in a [`TextEdit`](crate::TextEdit) does not set this to `true`.
     #[inline(always)]
     pub fn changed(&self) -> bool {
         self.changed
@@ -383,6 +408,14 @@ impl Response {
         true
     }
 
+    /// Like `on_hover_text`, but show the text next to cursor.
+    #[doc(alias = "tooltip")]
+    pub fn on_hover_text_at_pointer(self, text: impl Into<WidgetText>) -> Self {
+        self.on_hover_ui_at_pointer(|ui| {
+            ui.add(crate::widgets::Label::new(text));
+        })
+    }
+
     /// Show this text if the widget was hovered (i.e. a tooltip).
     ///
     /// The text will not be visible if the widget is not enabled.
@@ -411,10 +444,10 @@ impl Response {
         self
     }
 
-    /// Check for more interactions (e.g. sense clicks on a `Response` returned from a label).
+    /// Check for more interactions (e.g. sense clicks on a [`Response`] returned from a label).
     ///
     /// Note that this call will not add any hover-effects to the widget, so when possible
-    /// it is better to give the widget a `Sense` instead, e.g. using [`crate::Label::sense`].
+    /// it is better to give the widget a [`Sense`] instead, e.g. using [`crate::Label::sense`].
     ///
     /// ```
     /// # egui::__run_test_ui(|ui| {
@@ -435,7 +468,11 @@ impl Response {
         )
     }
 
-    /// Move the scroll to this UI with the specified alignment.
+    /// Adjust the scroll position until this UI becomes visible.
+    ///
+    /// If `align` is `None`, it'll scroll enough to bring the UI into view.
+    ///
+    /// See also: [`Ui::scroll_to_cursor`], [`Ui::scroll_to_rect`]. [`Ui::scroll_with_delta`].
     ///
     /// ```
     /// # egui::__run_test_ui(|ui| {
@@ -443,18 +480,15 @@ impl Response {
     ///     for i in 0..1000 {
     ///         let response = ui.button("Scroll to me");
     ///         if response.clicked() {
-    ///             response.scroll_to_me(egui::Align::Center);
+    ///             response.scroll_to_me(Some(egui::Align::Center));
     ///         }
     ///     }
     /// });
     /// # });
     /// ```
-    pub fn scroll_to_me(&self, align: Align) {
-        let scroll_target = lerp(self.rect.x_range(), align.to_factor());
-        self.ctx.frame_state().scroll_target[0] = Some((scroll_target, align));
-
-        let scroll_target = lerp(self.rect.y_range(), align.to_factor());
-        self.ctx.frame_state().scroll_target[1] = Some((scroll_target, align));
+    pub fn scroll_to_me(&self, align: Option<Align>) {
+        self.ctx.frame_state().scroll_target[0] = Some((self.rect.x_range(), align));
+        self.ctx.frame_state().scroll_target[1] = Some((self.rect.y_range(), align));
     }
 
     /// For accessibility.
@@ -466,6 +500,8 @@ impl Response {
             Some(OutputEvent::Clicked(make_info()))
         } else if self.double_clicked() {
             Some(OutputEvent::DoubleClicked(make_info()))
+        } else if self.triple_clicked() {
+            Some(OutputEvent::TripleClicked(make_info()))
         } else if self.gained_focus() {
             Some(OutputEvent::FocusGained(make_info()))
         } else if self.changed {
@@ -480,7 +516,7 @@ impl Response {
 
     /// Response to secondary clicks (right-clicks) by showing the given menu.
     ///
-    /// ``` rust
+    /// ```
     /// # egui::__run_test_ui(|ui| {
     /// let response = ui.label("Right-click me!");
     /// response.context_menu(|ui| {
@@ -501,6 +537,8 @@ impl Response {
 impl Response {
     /// A logical "or" operation.
     /// For instance `a.union(b).hovered` means "was either a or b hovered?".
+    ///
+    /// The resulting [`Self::id`] will come from the first (`self`) argument.
     pub fn union(&self, other: Self) -> Self {
         assert!(self.ctx == other.ctx);
         crate::egui_assert!(
@@ -525,6 +563,11 @@ impl Response {
                 self.double_clicked[1] || other.double_clicked[1],
                 self.double_clicked[2] || other.double_clicked[2],
             ],
+            triple_clicked: [
+                self.triple_clicked[0] || other.triple_clicked[0],
+                self.triple_clicked[1] || other.triple_clicked[1],
+                self.triple_clicked[2] || other.triple_clicked[2],
+            ],
             dragged: self.dragged || other.dragged,
             drag_released: self.drag_released || other.drag_released,
             is_pointer_button_down_on: self.is_pointer_button_down_on
@@ -544,7 +587,7 @@ impl Response {
 /// }
 /// ```
 ///
-/// Now `draw_vec2(ui, foo).hovered` is true if either `DragValue` were hovered.
+/// Now `draw_vec2(ui, foo).hovered` is true if either [`DragValue`](crate::DragValue) were hovered.
 impl std::ops::BitOr for Response {
     type Output = Self;
     fn bitor(self, rhs: Self) -> Self {
@@ -586,7 +629,9 @@ impl std::ops::BitOrAssign for Response {
 /// ```
 #[derive(Debug)]
 pub struct InnerResponse<R> {
+    /// What the user closure returned.
     pub inner: R,
+    /// The response of the area.
     pub response: Response,
 }
 

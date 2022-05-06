@@ -18,11 +18,11 @@ pub(crate) struct State {
 
 impl State {
     pub fn load(ctx: &Context, id: Id) -> Option<Self> {
-        ctx.memory().data.get_persisted(id)
+        ctx.data().get_persisted(id)
     }
 
     pub fn store(self, ctx: &Context, id: Id) {
-        ctx.memory().data.insert_persisted(id, self);
+        ctx.data().insert_persisted(id, self);
     }
 }
 
@@ -52,7 +52,7 @@ impl Default for Resize {
             resizable: true,
             min_size: Vec2::splat(16.0),
             max_size: Vec2::splat(f32::INFINITY),
-            default_size: vec2(320.0, 128.0), // TODO: preferred size of `Resize` area.
+            default_size: vec2(320.0, 128.0), // TODO: preferred size of [`Resize`] area.
             with_stroke: true,
         }
     }
@@ -65,7 +65,7 @@ impl Resize {
         self
     }
 
-    /// A source for the unique `Id`, e.g. `.id_source("second_resize_area")` or `.id_source(loop_index)`.
+    /// A source for the unique [`Id`], e.g. `.id_source("second_resize_area")` or `.id_source(loop_index)`.
     pub fn id_source(mut self, id_source: impl std::hash::Hash) -> Self {
         self.id_source = Some(Id::new(id_source));
         self
@@ -85,7 +85,7 @@ impl Resize {
     /// Preferred / suggested height. Actual height will depend on contents.
     ///
     /// Examples:
-    /// * if the contents is a `ScrollArea` then this decides the maximum size.
+    /// * if the contents is a [`ScrollArea`] then this decides the maximum size.
     /// * if the contents is a canvas, this decides the height of it,
     /// * if the contents is text and buttons, then the `default_height` is ignored
     ///   and the height is picked automatically..
@@ -178,7 +178,7 @@ impl Resize {
                 .at_least(self.min_size)
                 .at_most(self.max_size)
                 .at_most(
-                    ui.input().screen_rect().size() - 2.0 * ui.spacing().window_padding, // hack for windows
+                    ui.input().screen_rect().size() - ui.spacing().window_margin.sum(), // hack for windows
                 );
 
             State {
@@ -217,7 +217,7 @@ impl Resize {
         } else {
             // We are not being actively resized, so auto-expand to include size of last frame.
             // This prevents auto-shrinking if the contents contain width-filling widgets (separators etc)
-            // but it makes a lot of interactions with `Window`s nicer.
+            // but it makes a lot of interactions with [`Window`]s nicer.
             state.desired_size = state.desired_size.max(state.last_content_size);
         }
 

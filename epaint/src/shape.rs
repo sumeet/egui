@@ -1,8 +1,14 @@
+//! The different shapes that can be painted.
+
+use std::sync::Arc;
+
 use crate::{
-    text::{Fonts, Galley, TextStyle},
-    Color32, Mesh, Stroke,
+    text::{FontId, Fonts, Galley},
+    Color32, Mesh, Stroke, TextureId,
 };
 use emath::*;
+
+pub use crate::{CubicBezierShape, QuadraticBezierShape};
 
 /// A paint primitive such as a circle or a piece of text.
 /// Coordinates are all screen space points (not physical pixels).
@@ -15,14 +21,43 @@ pub enum Shape {
     /// For performance reasons it is better to avoid it.
     Vec(Vec<Shape>),
     Circle(CircleShape),
+    /// A line between two points.
     LineSegment {
         points: [Pos2; 2],
         stroke: Stroke,
     },
+    /// A series of lines between points.
+    /// The path can have a stroke and/or fill (if closed).
     Path(PathShape),
     Rect(RectShape),
     Text(TextShape),
     Mesh(Mesh),
+    QuadraticBezier(QuadraticBezierShape),
+    CubicBezier(CubicBezierShape),
+
+    /// Backend-specific painting.
+    Callback(PaintCallback),
+}
+
+#[cfg(test)]
+#[test]
+fn shape_impl_send_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Shape>();
+}
+
+impl From<Vec<Shape>> for Shape {
+    #[inline(always)]
+    fn from(shapes: Vec<Shape>) -> Self {
+        Self::Vec(shapes)
+    }
+}
+
+impl From<Mesh> for Shape {
+    #[inline(always)]
+    fn from(mesh: Mesh) -> Self {
+        Self::Mesh(mesh)
+    }
 }
 
 /// ## Constructors
@@ -53,25 +88,25 @@ impl Shape {
 
     /// Turn a line into equally spaced dots.
     pub fn dotted_line(
-        points: &[Pos2],
+        path: &[Pos2],
         color: impl Into<Color32>,
         spacing: f32,
         radius: f32,
     ) -> Vec<Self> {
         let mut shapes = Vec::new();
-        points_from_line(points, spacing, radius, color.into(), &mut shapes);
+        points_from_line(path, spacing, radius, color.into(), &mut shapes);
         shapes
     }
 
     /// Turn a line into dashes.
     pub fn dashed_line(
-        points: &[Pos2],
+        path: &[Pos2],
         stroke: impl Into<Stroke>,
         dash_length: f32,
         gap_length: f32,
     ) -> Vec<Self> {
         let mut shapes = Vec::new();
-        dashes_from_line(points, stroke.into(), dash_length, gap_length, &mut shapes);
+        dashes_from_line(path, stroke.into(), dash_length, gap_length, &mut shapes);
         shapes
     }
 
@@ -88,6 +123,8 @@ impl Shape {
     }
 
     /// A convex polygon with a fill and optional stroke.
+    ///
+    /// The most performant winding order is clockwise.
     #[inline]
     pub fn convex_polygon(
         points: Vec<Pos2>,
@@ -108,13 +145,21 @@ impl Shape {
     }
 
     #[inline]
-    pub fn rect_filled(rect: Rect, corner_radius: f32, fill_color: impl Into<Color32>) -> Self {
-        Self::Rect(RectShape::filled(rect, corner_radius, fill_color))
+    pub fn rect_filled(
+        rect: Rect,
+        rounding: impl Into<Rounding>,
+        fill_color: impl Into<Color32>,
+    ) -> Self {
+        Self::Rect(RectShape::filled(rect, rounding, fill_color))
     }
 
     #[inline]
-    pub fn rect_stroke(rect: Rect, corner_radius: f32, stroke: impl Into<Stroke>) -> Self {
-        Self::Rect(RectShape::stroke(rect, corner_radius, stroke))
+    pub fn rect_stroke(
+        rect: Rect,
+        rounding: impl Into<Rounding>,
+        stroke: impl Into<Stroke>,
+    ) -> Self {
+        Self::Rect(RectShape::stroke(rect, rounding, stroke))
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -123,22 +168,67 @@ impl Shape {
         pos: Pos2,
         anchor: Align2,
         text: impl ToString,
-        text_style: TextStyle,
+        font_id: FontId,
         color: Color32,
     ) -> Self {
-        let galley = fonts.layout_no_wrap(text.to_string(), text_style, color);
+        let galley = fonts.layout_no_wrap(text.to_string(), font_id, color);
         let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
         Self::galley(rect.min, galley)
     }
 
     #[inline]
-    pub fn galley(pos: Pos2, galley: crate::mutex::Arc<Galley>) -> Self {
+    pub fn galley(pos: Pos2, galley: Arc<Galley>) -> Self {
         TextShape::new(pos, galley).into()
+    }
+
+    #[inline]
+    /// The text color in the [`Galley`] will be replaced with the given color.
+    pub fn galley_with_color(pos: Pos2, galley: Arc<Galley>, text_color: Color32) -> Self {
+        TextShape {
+            override_text_color: Some(text_color),
+            ..TextShape::new(pos, galley)
+        }
+        .into()
     }
 
     pub fn mesh(mesh: Mesh) -> Self {
         crate::epaint_assert!(mesh.is_valid());
         Self::Mesh(mesh)
+    }
+
+    pub fn image(texture_id: TextureId, rect: Rect, uv: Rect, tint: Color32) -> Self {
+        let mut mesh = Mesh::with_texture(texture_id);
+        mesh.add_rect_with_uv(rect, uv, tint);
+        Shape::mesh(mesh)
+    }
+
+    /// The visual bounding rectangle (includes stroke widths)
+    pub fn visual_bounding_rect(&self) -> Rect {
+        match self {
+            Self::Noop => Rect::NOTHING,
+            Self::Vec(shapes) => {
+                let mut rect = Rect::NOTHING;
+                for shape in shapes {
+                    rect = rect.union(shape.visual_bounding_rect());
+                }
+                rect
+            }
+            Self::Circle(circle_shape) => circle_shape.visual_bounding_rect(),
+            Self::LineSegment { points, stroke } => {
+                if stroke.is_empty() {
+                    Rect::NOTHING
+                } else {
+                    Rect::from_two_pos(points[0], points[1]).expand(stroke.width / 2.0)
+                }
+            }
+            Self::Path(path_shape) => path_shape.visual_bounding_rect(),
+            Self::Rect(rect_shape) => rect_shape.visual_bounding_rect(),
+            Self::Text(text_shape) => text_shape.visual_bounding_rect(),
+            Self::Mesh(mesh) => mesh.calc_bounds(),
+            Self::QuadraticBezier(bezier) => bezier.visual_bounding_rect(),
+            Self::CubicBezier(bezier) => bezier.visual_bounding_rect(),
+            Self::Callback(custom) => custom.rect,
+        }
     }
 }
 
@@ -149,7 +239,7 @@ impl Shape {
         if let Shape::Mesh(mesh) = self {
             mesh.texture_id
         } else {
-            super::TextureId::Egui
+            super::TextureId::default()
         }
     }
 
@@ -183,6 +273,19 @@ impl Shape {
             }
             Shape::Mesh(mesh) => {
                 mesh.translate(delta);
+            }
+            Shape::QuadraticBezier(bezier_shape) => {
+                bezier_shape.points[0] += delta;
+                bezier_shape.points[1] += delta;
+                bezier_shape.points[2] += delta;
+            }
+            Shape::CubicBezier(cubie_curve) => {
+                for p in &mut cubie_curve.points {
+                    *p += delta;
+                }
+            }
+            Shape::Callback(shape) => {
+                shape.rect = shape.rect.translate(delta);
             }
         }
     }
@@ -220,6 +323,18 @@ impl CircleShape {
             stroke: stroke.into(),
         }
     }
+
+    /// The visual bounding rectangle (includes stroke width)
+    pub fn visual_bounding_rect(&self) -> Rect {
+        if self.fill == Color32::TRANSPARENT && self.stroke.is_empty() {
+            Rect::NOTHING
+        } else {
+            Rect::from_center_size(
+                self.center,
+                Vec2::splat(self.radius * 2.0 + self.stroke.width),
+            )
+        }
+    }
 }
 
 impl From<CircleShape> for Shape {
@@ -235,6 +350,7 @@ impl From<CircleShape> for Shape {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct PathShape {
+    /// Filled paths should prefer clockwise order.
     pub points: Vec<Pos2>,
     /// If true, connect the first and last of the points together.
     /// This is required if `fill != TRANSPARENT`.
@@ -270,6 +386,8 @@ impl PathShape {
     }
 
     /// A convex polygon with a fill and optional stroke.
+    ///
+    /// The most performant winding order is clockwise.
     #[inline]
     pub fn convex_polygon(
         points: Vec<Pos2>,
@@ -284,10 +402,14 @@ impl PathShape {
         }
     }
 
-    /// Screen-space bounding rectangle.
+    /// The visual bounding rectangle (includes stroke width)
     #[inline]
-    pub fn bounding_rect(&self) -> Rect {
-        Rect::from_points(&self.points).expand(self.stroke.width)
+    pub fn visual_bounding_rect(&self) -> Rect {
+        if self.fill == Color32::TRANSPARENT && self.stroke.is_empty() {
+            Rect::NOTHING
+        } else {
+            Rect::from_points(&self.points).expand(self.stroke.width / 2.0)
+        }
     }
 }
 
@@ -305,37 +427,45 @@ impl From<PathShape> for Shape {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct RectShape {
     pub rect: Rect,
-    /// How rounded the corners are. Use `0.0` for no rounding.
-    pub corner_radius: f32,
+    /// How rounded the corners are. Use `Rounding::none()` for no rounding.
+    pub rounding: Rounding,
     pub fill: Color32,
     pub stroke: Stroke,
 }
 
 impl RectShape {
     #[inline]
-    pub fn filled(rect: Rect, corner_radius: f32, fill_color: impl Into<Color32>) -> Self {
+    pub fn filled(
+        rect: Rect,
+        rounding: impl Into<Rounding>,
+        fill_color: impl Into<Color32>,
+    ) -> Self {
         Self {
             rect,
-            corner_radius,
+            rounding: rounding.into(),
             fill: fill_color.into(),
             stroke: Default::default(),
         }
     }
 
     #[inline]
-    pub fn stroke(rect: Rect, corner_radius: f32, stroke: impl Into<Stroke>) -> Self {
+    pub fn stroke(rect: Rect, rounding: impl Into<Rounding>, stroke: impl Into<Stroke>) -> Self {
         Self {
             rect,
-            corner_radius,
+            rounding: rounding.into(),
             fill: Default::default(),
             stroke: stroke.into(),
         }
     }
 
-    /// Screen-space bounding rectangle.
+    /// The visual bounding rectangle (includes stroke width)
     #[inline]
-    pub fn bounding_rect(&self) -> Rect {
-        self.rect.expand(self.stroke.width)
+    pub fn visual_bounding_rect(&self) -> Rect {
+        if self.fill == Color32::TRANSPARENT && self.stroke.is_empty() {
+            Rect::NOTHING
+        } else {
+            self.rect.expand(self.stroke.width / 2.0)
+        }
     }
 }
 
@@ -346,16 +476,100 @@ impl From<RectShape> for Shape {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+/// How rounded the corners of things should be
+pub struct Rounding {
+    /// Radius of the rounding of the North-West (left top) corner.
+    pub nw: f32,
+    /// Radius of the rounding of the North-East (right top) corner.
+    pub ne: f32,
+    /// Radius of the rounding of the South-West (left bottom) corner.
+    pub sw: f32,
+    /// Radius of the rounding of the South-East (right bottom) corner.
+    pub se: f32,
+}
+
+impl Default for Rounding {
+    #[inline]
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl From<f32> for Rounding {
+    #[inline]
+    fn from(radius: f32) -> Self {
+        Self {
+            nw: radius,
+            ne: radius,
+            sw: radius,
+            se: radius,
+        }
+    }
+}
+
+impl Rounding {
+    #[inline]
+    pub fn same(radius: f32) -> Self {
+        Self {
+            nw: radius,
+            ne: radius,
+            sw: radius,
+            se: radius,
+        }
+    }
+
+    #[inline]
+    pub fn none() -> Self {
+        Self {
+            nw: 0.0,
+            ne: 0.0,
+            sw: 0.0,
+            se: 0.0,
+        }
+    }
+
+    /// Do all corners have the same rounding?
+    #[inline]
+    pub fn is_same(&self) -> bool {
+        self.nw == self.ne && self.nw == self.sw && self.nw == self.se
+    }
+
+    /// Make sure each corner has a rounding of at least this.
+    #[inline]
+    pub fn at_least(&self, min: f32) -> Self {
+        Self {
+            nw: self.nw.max(min),
+            ne: self.ne.max(min),
+            sw: self.sw.max(min),
+            se: self.se.max(min),
+        }
+    }
+
+    /// Make sure each corner has a rounding of at most this.
+    #[inline]
+    pub fn at_most(&self, max: f32) -> Self {
+        Self {
+            nw: self.nw.min(max),
+            ne: self.ne.min(max),
+            sw: self.sw.min(max),
+            se: self.se.min(max),
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 
 /// How to paint some text on screen.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct TextShape {
     /// Top left corner of the first character.
     pub pos: Pos2,
 
     /// The layed out text, from [`Fonts::layout_job`].
-    pub galley: crate::mutex::Arc<Galley>,
+    pub galley: Arc<Galley>,
 
     /// Add this underline to the whole text.
     /// You can also set an underline when creating the galley.
@@ -366,14 +580,14 @@ pub struct TextShape {
     /// This will NOT replace background color nor strikethrough/underline color.
     pub override_text_color: Option<Color32>,
 
-    /// Rotate text by this many radians clock-wise.
+    /// Rotate text by this many radians clockwise.
     /// The pivot is `pos` (the upper left corner of the text).
     pub angle: f32,
 }
 
 impl TextShape {
     #[inline]
-    pub fn new(pos: Pos2, galley: crate::mutex::Arc<Galley>) -> Self {
+    pub fn new(pos: Pos2, galley: Arc<Galley>) -> Self {
         Self {
             pos,
             galley,
@@ -383,9 +597,9 @@ impl TextShape {
         }
     }
 
-    /// Screen-space bounding rectangle.
+    /// The visual bounding rectangle
     #[inline]
-    pub fn bounding_rect(&self) -> Rect {
+    pub fn visual_bounding_rect(&self) -> Rect {
         self.galley.mesh_bounds.translate(self.pos.to_vec2())
     }
 }
@@ -401,16 +615,15 @@ impl From<TextShape> for Shape {
 
 /// Creates equally spaced filled circles from a line.
 fn points_from_line(
-    line: &[Pos2],
+    path: &[Pos2],
     spacing: f32,
     radius: f32,
     color: Color32,
     shapes: &mut Vec<Shape>,
 ) {
     let mut position_on_segment = 0.0;
-    line.windows(2).for_each(|window| {
-        let start = window[0];
-        let end = window[1];
+    path.windows(2).for_each(|window| {
+        let (start, end) = (window[0], window[1]);
         let vector = end - start;
         let segment_length = vector.length();
         while position_on_segment < segment_length {
@@ -424,7 +637,7 @@ fn points_from_line(
 
 /// Creates dashes from a line.
 fn dashes_from_line(
-    line: &[Pos2],
+    path: &[Pos2],
     stroke: Stroke,
     dash_length: f32,
     gap_length: f32,
@@ -432,9 +645,8 @@ fn dashes_from_line(
 ) {
     let mut position_on_segment = 0.0;
     let mut drawing_dash = false;
-    line.windows(2).for_each(|window| {
-        let start = window[0];
-        let end = window[1];
+    path.windows(2).for_each(|window| {
+        let (start, end) = (window[0], window[1]);
         let vector = end - start;
         let segment_length = vector.length();
 
@@ -460,4 +672,120 @@ fn dashes_from_line(
 
         position_on_segment -= segment_length;
     });
+}
+
+// ----------------------------------------------------------------------------
+
+/// Information passed along with [`PaintCallback`] ([`Shape::Callback`]).
+pub struct PaintCallbackInfo {
+    /// Viewport in points.
+    ///
+    /// This specifies where on the screen to paint, and the borders of this
+    /// Rect is the [-1, +1] of the Normalized Device Coordinates.
+    ///
+    /// Note than only a portion of this may be visible due to [`Self::clip_rect`].
+    pub viewport: Rect,
+
+    /// Clip rectangle in points.
+    pub clip_rect: Rect,
+
+    /// Pixels per point.
+    pub pixels_per_point: f32,
+
+    /// Full size of the screen, in pixels.
+    pub screen_size_px: [u32; 2],
+}
+
+pub struct ViewportInPixels {
+    /// Physical pixel offset for left side of the viewport.
+    pub left_px: f32,
+
+    /// Physical pixel offset for top side of the viewport.
+    pub top_px: f32,
+
+    /// Physical pixel offset for bottom side of the viewport.
+    ///
+    /// This is what `glViewport`, `glScissor` etc expects for the y axis.
+    pub from_bottom_px: f32,
+
+    /// Viewport width in physical pixels.
+    pub width_px: f32,
+
+    /// Viewport width in physical pixels.
+    pub height_px: f32,
+}
+
+impl PaintCallbackInfo {
+    fn points_to_pixels(&self, rect: &Rect) -> ViewportInPixels {
+        ViewportInPixels {
+            left_px: rect.min.x * self.pixels_per_point,
+            top_px: rect.min.y * self.pixels_per_point,
+            from_bottom_px: self.screen_size_px[1] as f32 - rect.max.y * self.pixels_per_point,
+            width_px: rect.width() * self.pixels_per_point,
+            height_px: rect.height() * self.pixels_per_point,
+        }
+    }
+
+    /// The viewport rectangle. This is what you would use in e.g. `glViewport`.
+    pub fn viewport_in_pixels(&self) -> ViewportInPixels {
+        self.points_to_pixels(&self.viewport)
+    }
+
+    /// The "scissor" or "clip" rectangle. This is what you would use in e.g. `glScissor`.
+    pub fn clip_rect_in_pixels(&self) -> ViewportInPixels {
+        self.points_to_pixels(&self.clip_rect)
+    }
+}
+
+/// If you want to paint some 3D shapes inside an egui region, you can use this.
+///
+/// This is advanced usage, and is backend specific.
+#[derive(Clone)]
+pub struct PaintCallback {
+    /// Where to paint.
+    pub rect: Rect,
+
+    /// Paint something custom (e.g. 3D stuff).
+    ///
+    /// The argument is the render context, and what it contains depends on the backend.
+    /// In `eframe` it will be `egui_glow::Painter`.
+    ///
+    /// The rendering backend is responsible for first setting the active viewport to [`Self::rect`].
+    ///
+    /// The rendering backend is also responsible for restoring any state,
+    /// such as the bound shader program and vertex array.
+    pub callback: Arc<dyn Fn(&PaintCallbackInfo, &mut dyn std::any::Any) + Send + Sync>,
+}
+
+impl PaintCallback {
+    #[inline]
+    pub fn call(&self, info: &PaintCallbackInfo, render_ctx: &mut dyn std::any::Any) {
+        (self.callback)(info, render_ctx);
+    }
+}
+
+impl std::fmt::Debug for PaintCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomShape")
+            .field("rect", &self.rect)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::cmp::PartialEq for PaintCallback {
+    fn eq(&self, other: &Self) -> bool {
+        // As I understand it, the problem this clippy is trying to protect against
+        // can only happen if we do dynamic casts back and forth on the pointers, and we don't do that.
+        #[allow(clippy::vtable_address_comparisons)]
+        {
+            self.rect.eq(&other.rect) && Arc::ptr_eq(&self.callback, &other.callback)
+        }
+    }
+}
+
+impl From<PaintCallback> for Shape {
+    #[inline(always)]
+    fn from(shape: PaintCallback) -> Self {
+        Self::Callback(shape)
+    }
 }
